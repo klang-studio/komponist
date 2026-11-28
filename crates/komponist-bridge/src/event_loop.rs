@@ -2,27 +2,24 @@
 //!
 //! One `poll()` per tick over the caller's own fds (the control socket and the notification
 //! eventfd) and every fd the plugin registered, with a timeout that ends at the next due timer.
-//! No X11 connection of its own. The policies are those of `komponist_hosting::host_loop::PollLoop`
-//! (its module docs explain them), which cannot poll fds of its caller:
-//!
-//! - Callbacks run outside every borrow: [`EventLoop::poll`] only collects ready fds and due
-//!   timers; the caller dispatches them and checks before each dispatch that the fd or timer is
-//!   still registered ([`EventLoop::fd_registered`], [`EventLoop::timer_registered`]).
-//! - `WRITE` interest is polled as `POLLOUT` only once the fd's write cooldown has expired
-//!   (`DEFAULT_WRITE_INTERVAL`, 50 ms after the last `WRITE` report), so a JUCE plugin that
-//!   registers its always-writable X11 socket with `READ | WRITE` (Dexed) cannot make the loop
-//!   spin (spike WP-15 §1.7).
-//! - An fd that reports `POLLNVAL` is reported once with `ERROR` and then parked until the plugin
-//!   modifies or unregisters it.
+//! No X11 connection of its own. The fds and their policies are `komponist_hosting`'s
+//! [`PluginFds`], the same as in `komponist_hosting::host_loop::PollLoop` (its module docs explain
+//! them; #243): the write cooldown (`DEFAULT_WRITE_INTERVAL`, 50 ms after the last `WRITE` report,
+//! so a JUCE plugin that registers its always-writable X11 socket with `READ | WRITE`, Dexed,
+//! cannot make the loop spin) and `POLLNVAL` parking. Unlike `PollLoop` this loop also polls the
+//! caller's fds, and it does not dispatch: callbacks run outside every borrow, so
+//! [`EventLoop::poll`] only collects ready fds and due timers; the caller dispatches them and
+//! checks before each dispatch that the fd or timer is still registered
+//! ([`EventLoop::fd_registered`], [`EventLoop::timer_registered`]).
 
 use std::cell::RefCell;
-use std::os::fd::{BorrowedFd, RawFd};
+use std::os::fd::RawFd;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use komponist_hosting::host_loop::DEFAULT_WRITE_INTERVAL;
+use komponist_hosting::host_loop::{DEFAULT_WRITE_INTERVAL, PluginFds};
 use komponist_hosting::{FdEvents, HostLoop, HostingError, TimerId};
-use rustix::event::{PollFd, PollFlags, Timespec};
+use rustix::event::PollFd;
 
 /// Plugin fds that are ready and timers that are due after one [`EventLoop::poll`].
 #[derive(Debug, Default, PartialEq)]
@@ -40,28 +37,17 @@ struct TimerEntry {
     next: Instant,
 }
 
-#[derive(Debug)]
-struct FdEntry {
-    fd: RawFd,
-    interest: FdEvents,
-    /// No `POLLOUT` before this instant (write cooldown).
-    write_after: Instant,
-    /// Reported `POLLNVAL`; not polled until modified.
-    parked: bool,
-}
-
 #[derive(Debug, Default)]
 struct LoopState {
     next_timer: u32,
     timers: Vec<TimerEntry>,
-    fds: Vec<FdEntry>,
 }
 
 /// See the module docs. Main thread only; shared with the plugin as `Rc<dyn HostLoop>`.
 #[derive(Debug)]
 pub struct EventLoop {
     state: RefCell<LoopState>,
-    write_interval: Duration,
+    fds: RefCell<PluginFds>,
 }
 
 impl EventLoop {
@@ -74,20 +60,19 @@ impl EventLoop {
     pub fn with_write_interval(write_interval: Duration) -> Rc<EventLoop> {
         Rc::new(EventLoop {
             state: RefCell::new(LoopState::default()),
-            write_interval,
+            fds: RefCell::new(PluginFds::new(write_interval)),
         })
     }
 
     /// Number of registered timers and fds.
     #[cfg(test)]
     pub fn registrations(&self) -> (usize, usize) {
-        let state = self.state.borrow();
-        (state.timers.len(), state.fds.len())
+        (self.state.borrow().timers.len(), self.fds.borrow().len())
     }
 
     /// Whether `fd` is still registered.
     pub fn fd_registered(&self, fd: RawFd) -> bool {
-        self.state.borrow().fds.iter().any(|e| e.fd == fd)
+        self.fds.borrow().interest(fd).is_some()
     }
 
     /// Whether `timer` is still registered.
@@ -99,86 +84,18 @@ impl EventLoop {
     /// fds, waiting at most `max_wait` and less if a timer or a write cooldown is due earlier.
     /// Returns the ready plugin fds and the due timers (each timer moves on by its period).
     pub fn poll(&self, extra: &mut [PollFd<'_>], max_wait: Duration) -> Ready {
-        // 1. The plugin's part of the poll set, and the timeout.
-        let now = Instant::now();
-        let mut deadline = now + max_wait;
-        let mut wanted: Vec<(RawFd, PollFlags)> = Vec::new();
-        {
-            let state = self.state.borrow();
-            for timer in &state.timers {
-                deadline = deadline.min(timer.next);
-            }
-            for entry in state.fds.iter().filter(|e| !e.parked) {
-                let mut flags = PollFlags::empty();
-                if entry.interest.contains(FdEvents::READ) {
-                    flags |= PollFlags::IN;
-                }
-                if entry.interest.contains(FdEvents::WRITE) {
-                    if now >= entry.write_after {
-                        flags |= PollFlags::OUT;
-                    } else {
-                        deadline = deadline.min(entry.write_after);
-                    }
-                }
-                wanted.push((entry.fd, flags));
-            }
+        // 1.–2. Wait until `max_wait`, the next due timer or a write cooldown; the ready fds.
+        let mut deadline = Instant::now() + max_wait;
+        for timer in &self.state.borrow().timers {
+            deadline = deadline.min(timer.next);
         }
-        let timeout = deadline.saturating_duration_since(now);
-        let timespec = Timespec {
-            tv_sec: timeout.as_secs() as i64,
-            tv_nsec: i64::from(timeout.subsec_nanos()),
+        let mut ready = Ready {
+            fds: self.fds.borrow_mut().poll(extra, deadline),
+            timers: Vec::new(),
         };
 
-        // `extra` and the plugin fds in one array; `extra`'s results are copied back.
-        let mut pollfds: Vec<PollFd<'_>> = extra.to_vec();
-        for &(fd, flags) in &wanted {
-            // SAFETY: the plugin registered `fd` and keeps it open until it unregisters it; a
-            // closed fd only yields POLLNVAL.
-            let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-            pollfds.push(PollFd::from_borrowed_fd(borrowed, flags));
-        }
-        let polled = rustix::event::poll(&mut pollfds, Some(&timespec)).is_ok();
-        for (slot, result) in extra.iter_mut().zip(&pollfds) {
-            slot.clear_revents();
-            if polled {
-                *slot = result.clone();
-            }
-        }
-
-        // 2. Ready plugin fds; update cooldowns and parking while the state is borrowed.
-        let mut ready = Ready::default();
-        let now = Instant::now();
-        if polled {
-            let mut state = self.state.borrow_mut();
-            for (pollfd, &(fd, _)) in pollfds[extra.len()..].iter().zip(&wanted) {
-                let revents = pollfd.revents();
-                if revents.is_empty() {
-                    continue;
-                }
-                let Some(entry) = state.fds.iter_mut().find(|e| e.fd == fd) else {
-                    continue;
-                };
-                let mut events = FdEvents::NONE;
-                if revents.contains(PollFlags::IN) && entry.interest.contains(FdEvents::READ) {
-                    events = events.union(FdEvents::READ);
-                }
-                if revents.contains(PollFlags::OUT) && entry.interest.contains(FdEvents::WRITE) {
-                    events = events.union(FdEvents::WRITE);
-                    entry.write_after = now + self.write_interval;
-                }
-                if revents.intersects(PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL) {
-                    events = events.union(FdEvents::ERROR);
-                }
-                if revents.contains(PollFlags::NVAL) {
-                    entry.parked = true;
-                }
-                if events != FdEvents::NONE {
-                    ready.fds.push((fd, events));
-                }
-            }
-        }
-
         // 3. Due timers; missed periods are skipped instead of firing a burst.
+        let now = Instant::now();
         let mut state = self.state.borrow_mut();
         for timer in state.timers.iter_mut().filter(|t| t.next <= now) {
             timer.next += timer.period;
@@ -216,47 +133,22 @@ impl HostLoop for EventLoop {
     }
 
     fn register_fd(&self, fd: RawFd, events: FdEvents) -> Result<(), HostingError> {
-        let mut state = self.state.borrow_mut();
-        if fd < 0 || state.fds.iter().any(|e| e.fd == fd) {
-            return Err(HostingError::HostLoop(format!(
-                "fd {fd} is invalid or already registered"
-            )));
-        }
-        state.fds.push(FdEntry {
-            fd,
-            interest: events,
-            write_after: Instant::now(),
-            parked: false,
-        });
-        Ok(())
+        self.fds.borrow_mut().register(fd, events)
     }
 
     fn modify_fd(&self, fd: RawFd, events: FdEvents) -> Result<(), HostingError> {
-        let mut state = self.state.borrow_mut();
-        let entry = state
-            .fds
-            .iter_mut()
-            .find(|e| e.fd == fd)
-            .ok_or_else(|| HostingError::HostLoop(format!("unknown fd {fd}")))?;
-        entry.interest = events;
-        entry.parked = false;
-        Ok(())
+        self.fds.borrow_mut().modify(fd, events)
     }
 
     fn unregister_fd(&self, fd: RawFd) -> Result<(), HostingError> {
-        let mut state = self.state.borrow_mut();
-        let before = state.fds.len();
-        state.fds.retain(|e| e.fd != fd);
-        if state.fds.len() == before {
-            return Err(HostingError::HostLoop(format!("unknown fd {fd}")));
-        }
-        Ok(())
+        self.fds.borrow_mut().unregister(fd)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustix::event::PollFlags;
     use std::io::Write;
     use std::os::fd::{AsFd, AsRawFd};
     use std::os::unix::net::UnixStream;

@@ -1,7 +1,7 @@
 //! [`BridgeNotify`]: the bridge's [`HostNotify`], the way plugin threads reach the main loop.
 //!
-//! Like `komponist_hosting::host_loop::LoopNotify` (same bits, same eventfd wake), plus what a
-//! real bridge needs on top:
+//! Built on `komponist_hosting::host_loop::PendingNotifications` like `LoopNotify` (same bits, same
+//! eventfd wake; #243), plus what a real bridge needs on top:
 //!
 //! - **Log lines** are queued with their text for the main loop, which forwards them to the app as
 //!   `BridgeMsg::Log` (only the main thread sends on the control channel). Lines from the RT
@@ -12,14 +12,10 @@
 use std::cell::Cell;
 #[cfg(unix)]
 use std::os::fd::BorrowedFd;
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, PoisonError};
 
-#[cfg(windows)]
-use komponist_hosting::host_loop::wake::WakeEvent as Wake;
-#[cfg(unix)]
-use komponist_hosting::host_loop::wake::WakeFd as Wake;
-use komponist_hosting::host_loop::{notification_bit, notification_bits};
+use komponist_hosting::host_loop::PendingNotifications;
 use komponist_hosting::{GuiSize, HostNotification, HostNotify};
 use komponist_ipc::LogLevel;
 
@@ -36,8 +32,6 @@ const MAX_LOG_LEN: usize = 4096;
 
 /// `ParamEdited` notifications kept between two ticks; more are dropped.
 const MAX_EDITS: usize = 1024;
-
-const NO_SIZE: u64 = u64::MAX;
 
 std::thread_local! {
     /// Set on the bridge RT thread: plugin log lines from it are dropped instead of allocating.
@@ -73,77 +67,55 @@ struct LogQueue {
 /// See the module docs. Shared by the plugin (any thread) and the main loop.
 #[derive(Debug)]
 pub struct BridgeNotify {
-    pending: AtomicU32,
-    gui_size: AtomicU64,
+    pending: PendingNotifications,
     logs: Mutex<LogQueue>,
     dropped_rt_logs: AtomicU32,
     edits: Mutex<Vec<(u32, f64)>>,
-    wake: Wake,
 }
 
 impl BridgeNotify {
     /// Creates the wake fd (eventfd on Linux, pipe on macOS; Windows: a manual-reset event).
     pub fn new() -> std::io::Result<BridgeNotify> {
-        let wake = Wake::new()?;
+        let pending = PendingNotifications::new()?;
         let edits = Mutex::new(Vec::with_capacity(MAX_EDITS));
         // On macOS `std`'s mutex boxes its pthread mutex on first use: lock it once here, so that
         // `notify` (`ParamEdited`) never allocates.
         drop(edits.lock());
         Ok(BridgeNotify {
-            pending: AtomicU32::new(0),
-            gui_size: AtomicU64::new(NO_SIZE),
+            pending,
             logs: Mutex::new(LogQueue::default()),
             dropped_rt_logs: AtomicU32::new(0),
             edits,
-            wake,
         })
     }
 
     /// Readable while something is pending.
     #[cfg(unix)]
     pub fn wake_fd(&self) -> BorrowedFd<'_> {
-        self.wake.as_fd()
+        self.pending.wake_fd()
     }
 
     /// Windows: signalled while something is pending.
     #[cfg(windows)]
     pub fn wake_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
-        std::os::windows::io::AsHandle::as_handle(&self.wake)
+        self.pending.wake_handle()
     }
 
-    /// Sets `bit` and wakes the main loop if it was not set yet. RT-safe.
-    fn raise(&self, bit: u32) {
-        if self.pending.fetch_or(bit, Ordering::AcqRel) & bit == 0 {
-            // Non-blocking: never blocks (EAGAIN only when a wake-up is pending anyway).
-            self.wake.signal();
-        }
-    }
-
+    /// RT. Pending VST3 values from the engine for the controller.
     pub(crate) fn controller_values_ready(&self) {
-        self.raise(CONTROLLER_VALUES_PENDING);
+        self.pending.raise(CONTROLLER_VALUES_PENDING);
     }
 
     /// Clears the wake fd, then takes the pending bits (`notification_bits` and [`LOG_PENDING`])
     /// and the latest GUI size request. Draining first means a notification that races with this
     /// call wakes the next `poll()`.
     pub fn take(&self) -> (u32, Option<GuiSize>) {
-        self.wake.drain();
-        let pending = self.pending.swap(0, Ordering::AcqRel);
-        let size = if pending & notification_bits::GUI_RESIZE_REQUESTED != 0 {
-            let raw = self.gui_size.load(Ordering::Acquire);
-            (raw != NO_SIZE).then_some(GuiSize {
-                width: (raw >> 32) as u32,
-                height: raw as u32,
-            })
-        } else {
-            None
-        };
-        (pending, size)
+        self.pending.take()
     }
 
     /// Takes only the pending bits in `mask`; the others stay pending (the next `take` gets them).
     pub fn take_bits(&self, mask: u32) -> u32 {
-        self.pending.fetch_and(!mask, Ordering::AcqRel) & mask
+        self.pending.take_bits(mask)
     }
 
     /// Takes the queued log lines and the drop counters.
@@ -169,23 +141,16 @@ impl BridgeNotify {
 
 impl HostNotify for BridgeNotify {
     fn notify(&self, notification: HostNotification) {
-        match notification {
-            HostNotification::GuiResizeRequested(size) => {
-                let packed = (u64::from(size.width) << 32) | u64::from(size.height);
-                self.gui_size.store(packed, Ordering::Release);
+        if let HostNotification::ParamEdited { id, value } = notification {
+            // Main thread only (VST3 `performEdit`). `try_lock` never blocks, and the vector has
+            // its capacity from the start, so `push` does not allocate.
+            if let Ok(mut edits) = self.edits.try_lock()
+                && edits.len() < MAX_EDITS
+            {
+                edits.push((id, value));
             }
-            HostNotification::ParamEdited { id, value } => {
-                // Main thread only (VST3 `performEdit`). `try_lock` never blocks, and the vector
-                // has its capacity from the start, so `push` does not allocate.
-                if let Ok(mut edits) = self.edits.try_lock()
-                    && edits.len() < MAX_EDITS
-                {
-                    edits.push((id, value));
-                }
-            }
-            _ => {}
         }
-        self.raise(notification_bit(&notification));
+        self.pending.notify(&notification);
     }
 
     fn log(&self, level: LogLevel, message: &str) {
@@ -204,14 +169,14 @@ impl HostNotify for BridgeNotify {
             queue.dropped += 1;
         }
         drop(queue);
-        self.raise(LOG_PENDING);
+        self.pending.raise(LOG_PENDING);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notification_bits as bits;
+    use komponist_hosting::host_loop::notification_bits as bits;
 
     #[cfg(windows)]
     fn readable(notify: &BridgeNotify) -> bool {
