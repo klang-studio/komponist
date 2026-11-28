@@ -14,7 +14,7 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::SettingsAction;
 use komponist_app::dialogs::{missing_plugins, new_project, settings, start};
-use komponist_app::project_io::{self, RecentList};
+use komponist_app::project_io::RecentList;
 use komponist_app::settings::{Language, Settings};
 use komponist_app::ui_state::{Dialog, FocusArea, Screen, SettingsSection, StartView};
 use komponist_app::{Action, App, EditAction, ProjectAction, UiAction};
@@ -31,6 +31,7 @@ use komponist_session::device_host::{
     PluginCatalogHost, PluginHost, PluginWindowHost, PresetHost, ProcessorHost,
 };
 use komponist_session::engine_sync::EngineSync;
+use komponist_session::project_io;
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;

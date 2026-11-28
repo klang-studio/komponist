@@ -2129,9 +2129,9 @@ fn revealing_automation_unfolds_only_the_owners_ancestor_groups() {
 #[test]
 fn opening_a_document_clears_automation_selection_even_with_reused_ids() {
     use komponist_app::ProjectAction;
-    use komponist_app::project_io::save_project;
     use komponist_model::automation::{AutomationOwner, AutomationTarget, Point, Points};
     use komponist_model::edits::{self, NewAudioTrack};
+    use komponist_session::project_io::save_project;
 
     let (project, track) =
         edits::add_audio_track(&Project::new("Original"), NewAudioTrack::default()).unwrap();

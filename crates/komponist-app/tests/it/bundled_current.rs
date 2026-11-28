@@ -5,7 +5,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use komponist_app::actions::{BitDepth, EditAction, ExportRange, PluginAction, ProjectAction};
-use komponist_app::project_io::{load_project, save_project};
 use komponist_app::{Action, App};
 use komponist_engine::compile::{self, NoEnv};
 use komponist_engine::testing::{Logged, TestSine};
@@ -23,6 +22,7 @@ use komponist_plugin_api::device_assets::{OfflineRequest, OfflineStatus};
 use komponist_plugins::{DeviceStatus, FailReason, PluginDirs, PluginManagerEvent, ProcessorSetup};
 use komponist_processor::{EventKind, Processor};
 use komponist_session::device_host::{DeviceHost, PluginCatalogHost, PluginHost, ProcessorHost};
+use komponist_session::project_io::{load_project, save_project};
 
 use crate::common::{PATIENCE, app_with, config, devices, step_for, step_until};
 use crate::export::{export_settings, read};

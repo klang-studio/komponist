@@ -466,7 +466,7 @@ impl Driver {
 pub fn open_scratch_project(app: &mut App, dir: &Path) {
     let file = dir.join("Frames.komponist");
     let project = komponist_model::fixtures::empty_project();
-    komponist_app::project_io::save_project(&file, &project).unwrap();
+    komponist_session::project_io::save_project(&file, &project).unwrap();
     app.dispatch(Action::Project(
         komponist_app::actions::ProjectAction::OpenPath(file),
     ));

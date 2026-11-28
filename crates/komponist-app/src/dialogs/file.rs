@@ -26,7 +26,7 @@ use komponist_ui::{icons, px, state};
 
 use super::metrics::dialog as m;
 use super::{ActionButton, button_row, header, label_node, modal, styled};
-use crate::project_io::{is_project_file, with_extension};
+use komponist_session::project_io::{is_project_file, with_extension};
 
 /// What the browser is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

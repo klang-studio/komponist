@@ -20,7 +20,7 @@
 //!   plugin states to a writer thread through a latest-wins slot: a newer project replaces a queued
 //!   one. Creating the entry, deleting and closing queue in order before it. The writer thread owns
 //!   the entry; it writes the meta and then the copy ([`write_entry`], one generation: a copy on
-//!   disk always has its document's meta) with `project_io::write_atomic` (staging file, fsync,
+//!   disk always has its document's meta) with `komponist_session::project_io::write_atomic` (staging file, fsync,
 //!   rename, fsync of the folder). The UI thread never touches the folder for a copy, and the
 //!   realtime threads never do any file IO, also not while panicking. A failed write is tried again
 //!   after 2 s, 4 s … up to 30 s while the document stays dirty, and reported once per session.
@@ -55,7 +55,7 @@ use komponist_model::persist;
 use komponist_model::{Project, Repairs};
 
 use crate::param_undo::{DeferredPluginEdit, replay_deferred_plugins};
-use crate::project_io::{ProjectIoError, write_atomic};
+use komponist_session::project_io::{ProjectIoError, write_atomic};
 
 /// Version of [`RecoveryMeta`]; a meta with a higher version is treated as unreadable.
 pub const META_VERSION: u32 = 1;
@@ -326,7 +326,7 @@ pub struct MetaBase {
 fn ensure_private(dir: &Path) -> io::Result<()> {
     // Durably: `write_atomic` into it does not create folders, and a new store must survive a
     // power loss on file systems that need the parent flushed.
-    crate::project_io::create_dirs_durably(dir)?;
+    komponist_session::project_io::create_dirs_durably(dir)?;
     restrict(dir)
 }
 
@@ -1728,7 +1728,7 @@ fn write_from_hook(shared: &Shared, ended_by: EndedBy) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project_io::load_project_repaired;
+    use komponist_session::project_io::load_project_repaired;
 
     const WAIT: Duration = Duration::from_secs(5);
 
@@ -2470,11 +2470,10 @@ mod tests {
             .unwrap();
         drop(entry);
         let found = store.scan().0;
-        let reason = found[0]
-            .loaded
-            .as_ref()
-            .unwrap_err()
-            .reason(komponist_i18n::Lang::De);
+        let reason = crate::project_io::project_io_reason(
+            found[0].loaded.as_ref().unwrap_err(),
+            komponist_i18n::Lang::De,
+        );
         assert_eq!(reason, "Dateiversion 99 ist neuer als dieses komponist");
         assert_eq!(found[0].name(), Some("Night Drive"));
         let _ = fs::remove_dir_all(dir);

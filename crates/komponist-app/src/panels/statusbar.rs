@@ -528,7 +528,8 @@ mod tests {
         let device = project.track(slow).unwrap().channel.devices[0].id;
         let preview = std::env::var_os("KOMPONIST_PDC_PREVIEW").map(std::path::PathBuf::from);
         if let Some(dir) = &preview {
-            crate::project_io::save_project(&dir.join("pdc.komponist"), &project).unwrap();
+            komponist_session::project_io::save_project(&dir.join("pdc.komponist"), &project)
+                .unwrap();
         }
 
         for lang in [Lang::De, Lang::En] {

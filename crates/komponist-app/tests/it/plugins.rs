@@ -1200,7 +1200,7 @@ fn native_layout_is_discovered_edited_saved_and_revalidated() {
         "committed CLAP text converted, displayed and saved",
         |app| {
             let host = app.engine().host();
-            let saved = komponist_app::project_io::load_project(&file).unwrap();
+            let saved = komponist_session::project_io::load_project(&file).unwrap();
             let state = saved
                 .find_device(valid)
                 .unwrap()

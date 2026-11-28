@@ -2,6 +2,7 @@
 
 pub mod device_host;
 pub mod engine_sync;
+pub mod project_io;
 
 #[cfg(all(test, debug_assertions))]
 #[global_allocator]

@@ -142,8 +142,8 @@ Their READMEs record provenance.
 | [`komponist-tokens`](../crates/komponist-tokens/README.md) | Generated design tokens, colour conversion and embedded font assets |
 | [`komponist-i18n`](../crates/komponist-i18n/README.md) | Generated typed DE/EN text catalog from Fluent sources |
 | [`komponist-ui`](../crates/komponist-ui/README.md) | Shared egui theme, widgets, canvases, plugin-frame header, gallery |
-| [`komponist-session`](../crates/komponist-session/src/lib.rs) | Headless document/engine synchronization, audio and MIDI I/O, device host capabilities |
-| [`komponist-app`](../crates/komponist-app/README.md) | Application shell, actions/keymap, views/dialogs, project IO |
+| [`komponist-session`](../crates/komponist-session/src/lib.rs) | Headless document/engine synchronization, audio and MIDI I/O, device host capabilities, project file I/O |
+| [`komponist-app`](../crates/komponist-app/README.md) | Application shell, actions/keymap, views/dialogs, project lifecycle |
 
 `komponist-model` uses `komponist-tokens` for parameter layout geometry and receives localized
 names as arguments.
@@ -242,6 +242,13 @@ Plugin states are base64 and survive a missing plugin unchanged. Loading validat
 routing, repairs defined dangling-reference cases and rejects cycles or invalid track content.
 Device references use CLAP or VST3 identities. Below 1.0 only the current version is supported
 (D10). Files with a different version are rejected with a clear message.
+
+[`komponist-session::project_io`](../crates/komponist-session/src/project_io.rs) reads project
+files with model validation and repair reporting. Saving flushes a staged file before replacing
+the destination. On Unix a directory flush failure after replacement is reported separately
+from a failed write, so callers can retain the assets referenced by the published file.
+On Windows the replacement uses a write-through move. The app coordinates the project lifecycle,
+Save As, dialogs and the recent list.
 
 Audio assets remain linked by relative and absolute paths. Save As rebases resolving links;
 Collect and Save copies audio and Sampler sources into the project's sample folder, deduplicating

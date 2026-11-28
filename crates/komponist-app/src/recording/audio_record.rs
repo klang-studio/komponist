@@ -138,7 +138,7 @@ impl StagedCopies {
     /// keep the deletion and lose the copy. If the flush fails, the published files go again.
     fn publish(self, target: &Path) -> std::io::Result<BTreeMap<PathBuf, PathBuf>> {
         let published = files::publish(&self.copies, target)?;
-        if let Err(error) = crate::project_io::sync_directory(target) {
+        if let Err(error) = komponist_session::project_io::sync_directory(target) {
             for path in published.values() {
                 let _ = std::fs::remove_file(path);
             }
@@ -1626,7 +1626,7 @@ mod tests {
         begin(&mut app, track);
         let project_file = root.join("Song.komponist");
         assert!(app.save_to(&project_file));
-        let saved = crate::project_io::load_project(&project_file).unwrap();
+        let saved = komponist_session::project_io::load_project(&project_file).unwrap();
         let ClipContent::Audio(audio) = &saved.track(track).unwrap().clips[0].content else {
             panic!("saved audio");
         };
@@ -1698,7 +1698,7 @@ mod tests {
 
         std::fs::remove_dir(&blocked).unwrap();
         assert!(app.save_to(&blocked));
-        let saved = crate::project_io::load_project(&blocked).unwrap();
+        let saved = komponist_session::project_io::load_project(&blocked).unwrap();
         let ClipContent::Audio(audio) = &saved.track(track).unwrap().clips[0].content else {
             panic!("saved audio");
         };
@@ -1801,7 +1801,7 @@ mod tests {
         assert!(!chosen_dir.join("Song.komponist").exists());
         assert!(!chosen_dir.join("Takes").exists());
 
-        let saved = crate::project_io::load_project(&expected_project).unwrap();
+        let saved = komponist_session::project_io::load_project(&expected_project).unwrap();
         let ClipContent::Audio(audio) = &saved.track(track).unwrap().clips[0].content else {
             panic!("saved audio");
         };
@@ -2021,7 +2021,7 @@ mod tests {
                 "interrupted take did not finalize"
             );
         }
-        let saved = crate::project_io::load_project(&path).unwrap();
+        let saved = komponist_session::project_io::load_project(&path).unwrap();
         let audio_clip = &saved.track(audio).unwrap().clips[0];
         let ClipContent::Audio(audio) = &audio_clip.content else {
             panic!("saved audio clip")
@@ -2331,16 +2331,16 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_failed_flush_of_the_published_takes_keeps_the_originals() {
-        use crate::project_io::tests::FAIL_DIRECTORY_SYNC;
+        use komponist_session::project_io::set_directory_sync_failure_for_test;
         let (root, mut app, track) = rig();
         begin(&mut app, track);
         let (release, done) = staging_held(&mut app, &root);
         release.send(()).unwrap();
         done.recv_timeout(Duration::from_secs(5)).unwrap();
         // The commit (and its flush) runs on this thread in the next frame.
-        FAIL_DIRECTORY_SYNC.with(|flag| flag.set(true));
+        set_directory_sync_failure_for_test(true);
         app.step();
-        FAIL_DIRECTORY_SYNC.with(|flag| flag.set(false));
+        set_directory_sync_failure_for_test(false);
         assert!(!app.recording.audio.is_active());
         let ClipContent::Audio(audio) = &app.project().track(track).unwrap().clips[0].content
         else {
@@ -2423,7 +2423,8 @@ mod tests {
         wait(&mut app, |app| !app.recording.audio.is_active());
         std::fs::remove_file(&takes).unwrap();
         let link = |app: &App| {
-            let saved = crate::project_io::load_project(&root.join("Song.komponist")).unwrap();
+            let saved =
+                komponist_session::project_io::load_project(&root.join("Song.komponist")).unwrap();
             let ClipContent::Audio(audio) = &saved.track(track).unwrap().clips[0].content else {
                 panic!("audio clip");
             };

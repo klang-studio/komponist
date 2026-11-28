@@ -257,7 +257,7 @@ fn queued_quit_preserves_dirty_cancel_and_save_flow() {
     let dir = crate::common::scratch("menu-quit");
     let path = dir.join("Menu.komponist");
     let project = Project::new("Menu");
-    komponist_app::project_io::save_project(&path, &project).unwrap();
+    komponist_session::project_io::save_project(&path, &project).unwrap();
     let mut app = App::headless(project).with_lang(Lang::En);
     app.dispatch(Action::Project(komponist_app::ProjectAction::OpenPath(
         path.clone(),
@@ -277,7 +277,7 @@ fn queued_quit_preserves_dirty_cancel_and_save_flow() {
     assert!(h.state_mut().close_requested());
     assert!(!h.state_mut().dispatch_menu(Command::Quit));
     assert_eq!(
-        komponist_app::project_io::load_project(&path)
+        komponist_session::project_io::load_project(&path)
             .unwrap()
             .tracks
             .len(),

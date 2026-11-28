@@ -1847,7 +1847,7 @@ fn saving_reports_cached_and_missing_plugin_states_without_losing_fresh_states()
         status.starts_with("Kein Plug-in-Zustand verfügbar: Vital"),
         "{status}"
     );
-    let saved = komponist_app::project_io::load_project(&file).unwrap();
+    let saved = komponist_session::project_io::load_project(&file).unwrap();
     assert_eq!(
         saved.find_device(surge).unwrap().2.state.as_deref(),
         Some(&b"previous surge state"[..])
@@ -1884,7 +1884,7 @@ fn saving_reports_cached_and_missing_plugin_states_without_losing_fresh_states()
     assert!(status.contains("Surge XT"), "{status}");
     assert_eq!(state(&app, fresh), Some(next));
     assert_eq!(
-        komponist_app::project_io::load_project(&file).unwrap(),
+        komponist_session::project_io::load_project(&file).unwrap(),
         saved
     );
 }
