@@ -103,14 +103,17 @@ impl BusBuffers {
         }
     }
 
-    /// Input side: every bus cleared, then the stereo `input` and the `sidechain` adapted in.
+    /// Input side: the silence flags reset, then the stereo `input` and the `sidechain` adapted
+    /// in (the adapter clears every channel first).
     fn fill_from_stereo(
         &mut self,
         input: [&[f32]; 2],
         sidechain: Option<[&[f32]; 2]>,
         frames: usize,
     ) {
-        self.clear(frames);
+        for bus in &mut self.buses {
+            bus.silenceFlags = 0;
+        }
         self.audio.fill_from_stereo(input, sidechain, frames);
     }
 
