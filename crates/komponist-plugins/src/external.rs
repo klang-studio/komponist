@@ -572,8 +572,9 @@ impl EventProcessor for ExternalProcessor {
 
         while let Some(wire) = self.monitor.pop_output_event() {
             if let Some(mut edit) = parameter_edit(&wire, self.completed) {
-                // A stage can run multiple subsegments if it has sample-accurate automation.
-                edit.offset += out.block_offset();
+                // A stage can run multiple subsegments if it has sample-accurate automation. The
+                // offset comes from the bridge: saturate (the engine clamps it to the block).
+                edit.offset = edit.offset.saturating_add(out.block_offset());
                 if stage.edits.len() < stage.edits.capacity() {
                     stage.edits.push_back(edit);
                 }
@@ -1089,6 +1090,70 @@ mod tests {
             assert_eq!(output.events(), [expected_note(13)]);
             assert!(processor.pop_parameter_edit().is_none());
         });
+    }
+
+    /// #230: a hostile bridge reports a GUI edit at offset `u32::MAX` while the stage runs a
+    /// later subsegment: the offset saturates (it overflowed before, a panic in debug builds).
+    #[test]
+    fn a_hostile_edit_offset_saturates() {
+        use komponist_ipc::{BlockResult, BridgeServer, BridgeState, ShmRegion};
+        use komponist_processor::processor::{EventBuffer, EventSink};
+
+        let region = Arc::new(ShmRegion::create().unwrap());
+        region.set_bridge_state(BridgeState::Active);
+        let shared = Arc::new(Shared::new());
+        shared.run.store(RUN_ACTIVE, Ordering::Release);
+        let mut processor = ExternalProcessor::new(
+            BridgeClient::new(region.clone()),
+            shared,
+            DeviceRole::MidiEffect,
+            ProcessorSetup {
+                sample_rate: 48_000.0,
+                max_block: 32,
+            },
+        );
+        let context = ProcessContext {
+            frames: 16,
+            sample_rate: 48_000.0,
+            transport: TransportInfo {
+                playing: true,
+                recording: false,
+                looping: false,
+                tempo_bpm: 120.0,
+                meter: Meter::FOUR_FOUR,
+                position_ticks: 0.0,
+                loop_range: TickRange::new(Tick(0), Tick(3840)),
+            },
+            offline: true,
+            deadline: None,
+        };
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                let mut server = BridgeServer::new(region);
+                let request = server
+                    .wait_request(Some(Instant::now() + OFFLINE_DEADLINE))
+                    .unwrap();
+                assert!(server.push_output_event(WireEvent {
+                    reserved: request.seq,
+                    ..WireEvent::new(u32::MAX, WireEventKind::ParamValue { id: 3, value: 0.5 })
+                }));
+                server.finish(BlockResult::default());
+            });
+            let mut output = EventBuffer::new(16);
+            let stage = processor.event_processor().unwrap();
+            stage.process_events(
+                &context,
+                &[],
+                &mut EventSink::in_segment(&mut output, 16, 16),
+            );
+        });
+        assert_eq!(
+            processor.pop_parameter_edit(),
+            Some(ParameterEdit {
+                offset: u32::MAX,
+                kind: ParameterEditKind::Value { id: 3, value: 0.5 }
+            }),
+        );
     }
 
     #[test]
