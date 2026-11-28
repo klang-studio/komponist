@@ -438,6 +438,41 @@ mod tests {
         }
     }
 
+    /// Pad edits while a voice sounds glide to the new values and arrive there exactly. The
+    /// private smoother sampler-core had before #366 froze about 1e-5 short of the target.
+    #[test]
+    fn pad_edits_in_a_sounding_voice_reach_their_target_exactly() {
+        let before = PadParams {
+            volume_db: -6.0,
+            pan: -0.5,
+            tune: -3.0,
+            drive: 0.1,
+            ..PadParams::default()
+        };
+        let mut t = setup(&[(0, before)]);
+        let mut e = Engine::new(SR);
+        t.hit(&mut e, 0, 1.0);
+        t.render(&mut e, 10);
+        let after = PadSettings::new(
+            &PadParams {
+                volume_db: 0.0,
+                pan: 0.25,
+                tune: 2.0,
+                drive: 0.6,
+                ..PadParams::default()
+            },
+            SR,
+        );
+        t.settings[0] = after;
+        // 50 ms, 25 glide time constants
+        t.render(&mut e, 2400);
+        assert_eq!(e.active_voices(), 1);
+        assert_eq!(
+            e.voices[0].chased(),
+            [after.gain, after.pan, after.tune, after.drive]
+        );
+    }
+
     #[test]
     fn plays_sample_until_end() {
         let t = setup(&[]);

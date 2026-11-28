@@ -1,5 +1,6 @@
 //! A single playing sample.
 
+use klang_dsp::one_pole::chase;
 use klang_dsp::units::semitones_to_ratio;
 
 use crate::biquad::Biquad;
@@ -156,6 +157,12 @@ impl Voice {
         self.choking = true;
     }
 
+    /// The values that glide towards the pad settings: gain, pan, tune, drive.
+    #[cfg(test)]
+    pub(crate) fn chased(&self) -> [f32; 4] {
+        [self.gain, self.pan, self.tune, self.drive]
+    }
+
     #[inline]
     fn sources(&self, lfo: f32, env1: f32, env2: f32) -> Sources {
         Sources {
@@ -291,14 +298,4 @@ impl Voice {
         let (pan_l, pan_r) = klang_dsp::pan::balance(self.pan + m.pan);
         (x.0 * gain * pan_l, x.1 * gain * pan_r)
     }
-}
-
-#[inline]
-fn chase(value: &mut f32, target: f32, glide: f32) {
-    let delta = target - *value;
-    *value = if delta.abs() < 1e-6 {
-        target
-    } else {
-        *value + glide * delta
-    };
 }
