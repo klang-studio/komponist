@@ -16,8 +16,7 @@ use clack_host::events::{Match, Pckn};
 use clack_host::prelude::*;
 use komponist_ipc::{WireEvent, WireEventKind};
 
-/// "No note id" in [`WireEvent::note_id`] (the table on [`WireEvent`]).
-pub(crate) const NO_NOTE_ID: u32 = u32::MAX;
+pub(crate) use crate::adapter::NO_NOTE_ID;
 
 /// One CLAP input event of the kinds komponist sends.
 #[derive(Debug, Clone, Copy)]

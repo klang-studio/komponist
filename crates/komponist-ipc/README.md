@@ -8,7 +8,8 @@ bridges.
 - [src/shm.rs](src/shm.rs) — Defines the shared layout and its app and bridge access roles.
 - [src/ring.rs](src/ring.rs) — Transfers bounded event lists through single-producer,
   single-consumer rings.
-- [src/signal.rs](src/signal.rs) — Provides deadline waits and wakes.
+- [src/signal.rs](src/signal.rs) — Documents the handshake's deadline waits and wakes
+  (`komponist_rt::os_sync` on Linux and macOS) and implements the Windows event wait.
 - [src/control.rs](src/control.rs) — Defines framed control messages using shared extension
   and frame types from [komponist-plugin-api](../komponist-plugin-api/README.md).
 - [src/process.rs](src/process.rs) — Watches bridge exits.

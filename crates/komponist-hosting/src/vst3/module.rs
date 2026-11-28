@@ -334,16 +334,21 @@ pub(crate) fn audio_classes(
     let factory3 = factory.cast::<IPluginFactory3>();
     // SAFETY: plain out-structs, zeroed like the SDK does.
     let mut info: PFactoryInfo = unsafe { std::mem::zeroed() };
+    // SAFETY: `factory` is a live factory of the loaded module; `info` is a valid out-struct
+    // for the duration of the call.
     let factory_vendor = if unsafe { factory.getFactoryInfo(&mut info) } == kResultOk {
         c_chars(&info.vendor)
     } else {
         String::new()
     };
     let bundle = std::path::absolute(bundle).unwrap_or_else(|_| bundle.to_path_buf());
+    // SAFETY: a live factory; the call takes no arguments.
     let count = unsafe { factory.countClasses() };
     let mut classes = Vec::new();
     for index in 0..count.max(0) {
+        // SAFETY: a plain C out-struct; all zeroes is a valid value.
         let mut info: PClassInfo = unsafe { std::mem::zeroed() };
+        // SAFETY: a live factory, `index` below `countClasses`, `info` valid for the call.
         if unsafe { factory.getClassInfo(index, &mut info) } != kResultOk
             || c_chars(&info.category) != AUDIO_MODULE_CLASS
         {
@@ -354,7 +359,10 @@ pub(crate) fn audio_classes(
         let mut version = String::new();
         let mut subcategories = String::new();
         if let Some(f2) = &factory2 {
+            // SAFETY: as above.
             let mut info2: PClassInfo2 = unsafe { std::mem::zeroed() };
+            // SAFETY: the factory's own `IPluginFactory2` interface, the same `index`, `info2`
+            // valid for the call.
             if unsafe { f2.getClassInfo2(index, &mut info2) } == kResultOk {
                 vendor = c_chars(&info2.vendor);
                 version = c_chars(&info2.version);
@@ -362,7 +370,10 @@ pub(crate) fn audio_classes(
             }
         }
         if let Some(f3) = &factory3 {
+            // SAFETY: as above.
             let mut info_w: PClassInfoW = unsafe { std::mem::zeroed() };
+            // SAFETY: the factory's own `IPluginFactory3` interface, the same `index`, `info_w`
+            // valid for the call.
             if unsafe { f3.getClassInfoUnicode(index, &mut info_w) } == kResultOk {
                 let wide = utf16(&info_w.name);
                 if !wide.is_empty() {

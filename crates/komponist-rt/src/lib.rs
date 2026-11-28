@@ -9,16 +9,18 @@
 //!   [`JoinToken`] of a join. They exist on every OS so callers need no `cfg`, but only macOS can
 //!   create them; elsewhere `Option<Workgroup>` is always `None`.
 //! - [`topology`]: [`topology::performance_cores`] for the worker count on Apple silicon.
-//! - macOS only: [`mach_time`] (the clock behind `Instant` in Mach ticks) and [`os_sync`] (wait and
-//!   wake on an address with a deadline, compensating the kernel's timer leeway).
+//! - [`os_sync`]: wait and wake on a 32-bit word with a deadline (futex, `os_sync_wait_on_address`
+//!   with the kernel's timer leeway compensated, `WaitOnAddress`), within a process or (Unix) across
+//!   processes; the engine's workers and the block handshake of komponist-ipc use it.
+//! - macOS only: [`mach_time`] (the clock behind `Instant` in Mach ticks).
 //!
 //! Why macOS needs more than a priority (realtime spike #43, internal notes): on Apple silicon the
 //! time-constraint policy alone leaves a lightly loaded machine running RT threads on efficiency
 //! cores or down-clocked performance cores (2–16 % late blocks); every thread that works to the
 //! block deadline must also be in an audio workgroup (0–0.13 %).
 //!
-//! RT rules: functions marked "RT" allocate nothing, take no lock and make no blocking call;
-//! "non-RT" ones run before or after a realtime loop.
+//! RT rules: functions marked "RT" allocate nothing, take no lock and make no blocking call (except
+//! the [`os_sync`] wait with a deadline); "non-RT" ones run before or after a realtime loop.
 
 pub mod policy;
 pub mod topology;
@@ -26,7 +28,6 @@ pub mod workgroup;
 
 #[cfg(target_os = "macos")]
 pub mod mach_time;
-#[cfg(target_os = "macos")]
 pub mod os_sync;
 
 // Unit tests run the RT paths inside `assert_no_alloc`, which needs its allocator (debug builds

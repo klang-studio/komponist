@@ -11,26 +11,24 @@ workspace = true
 
 [dependencies]
 komponist-plugin-api.workspace = true
+# The shared-scope wait and wake of the block handshake (`os_sync`; #45, #243) and, on macOS, the
+# Mach clock and the time-constraint policy in a test.
+komponist-rt.workspace = true
 serde.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 
 [target.'cfg(unix)'.dependencies]
 # Workspace features (mm, thread, process, net) plus: fs (memfd, seals, fstat), event (poll on
-# pidfds, kqueue on macOS), time (CLOCK_MONOTONIC for absolute futex deadlines).
+# pidfds, kqueue on macOS), time (the `Timespec` of the process watcher's waits).
 rustix = { workspace = true, features = ["fs", "event", "time"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # POSIX shared memory (`shm_open`) in place of memfd; the page size for its rounded size.
 rustix = { workspace = true, features = ["shm", "param"] }
-# `os_sync_wait_on_address` / `os_sync_wake_by_address_all` (which rustix does not wrap) and the
-# Mach clock, with the wait's timer-leeway compensation (#45); shared with the engine. The
-# time-constraint policy in a test.
-komponist-rt.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Foundation (handles, DuplicateHandle, errors), Security (the SECURITY_ATTRIBUTES parameter of
-# the create calls), Threading (events, high-resolution waitable timers, WaitOnAddress, process
-# handles), Memory (CreateFileMappingW, MapViewOfFile, VirtualLock), Pipes + Storage_FileSystem +
+# the create calls), Threading (events, high-resolution waitable timers, process handles), Memory (CreateFileMappingW, MapViewOfFile, VirtualLock), Pipes + Storage_FileSystem +
 # System_IO (the overlapped duplex named pipe of the control channel), JobObjects + ToolHelp
 # (bridges and scans end with the app: job objects, resuming a child created suspended; #218).
 windows-sys = { workspace = true, features = [

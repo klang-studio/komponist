@@ -2,7 +2,9 @@
 //! implementation of the bridge main loop's plugin side, used by this crate's tests.
 //!
 //! The bridge (WP-31) owns the real main loop, which also serves the control socket and the
-//! watchdog. It can reuse [`PollLoop`] or copy its policies; either way it should keep these rules:
+//! watchdog. Both build on the same parts (#243): [`PluginFds`] (the plugin's fds and the fd
+//! policies below, one `poll()` per tick) and [`PendingNotifications`] (the notification bits and
+//! the wake). The rules:
 //!
 //! - **One `poll()` per tick** over a wake fd ([`LoopNotify`]'s eventfd), every registered plugin
 //!   fd, and a timeout that ends at the next due timer. No X11 connection of its own.
@@ -17,15 +19,17 @@
 //!      reported and needs no interest.
 //!   2. `WRITE` interest is polled as `POLLOUT` only once the fd's write cooldown has expired.
 //!      After an `on_fd` call that reported `WRITE`, the fd gets no `POLLOUT` for
-//!      [`PollLoop::write_interval`] (default [`DEFAULT_WRITE_INTERVAL`], 50 ms). So an
+//!      [`PluginFds::write_interval`] (default [`DEFAULT_WRITE_INTERVAL`], 50 ms). So an
 //!      always-writable fd costs at most one extra wake-up and callback per interval, while a plugin
 //!      that really waits for a full socket buffer to drain still learns about it within that
-//!      interval. `None` turns write polling off entirely (the spike's `CLAP_CHILD_IGNORE_WRITE`).
+//!      interval. There is no way to turn write polling off (the spike's
+//!      `CLAP_CHILD_IGNORE_WRITE`): such a plugin would never learn that its socket drained.
 //!   3. An fd that reports `POLLNVAL` (closed without unregistering) is reported once with `ERROR`
 //!      and then parked until the plugin modifies or unregisters it, so a stale fd cannot spin
 //!      either.
 //! - **Notifications** ([`HostNotification`]) arrive from any thread through [`LoopNotify`]: an
-//!   atomic bit per kind plus an eventfd wake, no allocation and no lock. The loop handles
+//!   atomic bit per kind plus an eventfd wake ([`PendingNotifications`]), no allocation and no
+//!   lock. The loop handles
 //!   `MainThreadCallback` (calls [`HostedPlugin::on_main_thread`]) and `ParamFlushRequested` (calls
 //!   [`HostedPlugin::flush_params`] while the plugin is inactive) itself and records everything
 //!   else for the caller ([`PollLoop::take_observed`]); the bridge forwards those to the app.
@@ -407,62 +411,65 @@ pub mod wake {
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 compile_error!("komponist-hosting: no wake backend (host_loop.rs) for this OS");
 
-/// A [`HostNotify`] that coalesces notifications into atomic bits and wakes a [`PollLoop`] through
-/// a wake fd (an eventfd on Linux, a non-blocking pipe on macOS) or a wake event (Windows).
-/// RT-safe: [`HostNotify::notify`] does atomics and at most one non-blocking `write` (`SetEvent`).
-///
-/// Coalescing: one bit per kind, the latest GUI size request, and for `ParamEdited` (VST3 only)
-/// only the latest id and value plus a counter; a bridge that forwards VST3 GUI edits needs a ring
-/// instead.
-#[derive(Debug)]
-pub struct LoopNotify {
-    pending: AtomicU32,
-    gui_size: AtomicU64,
-    edited_id: AtomicU32,
-    edited_value: AtomicU64,
-    edited_count: AtomicU32,
-    log_lines: [AtomicU32; 4],
-    echo_log: bool,
-    wake: Wake,
-}
-
-/// What wakes a [`PollLoop`]: a wake fd, or the wake event on Windows.
+/// What wakes a main loop: a wake fd, or the wake event on Windows.
 #[cfg(unix)]
 type Wake = wake::WakeFd;
 #[cfg(windows)]
 type Wake = wake::WakeEvent;
 
-impl LoopNotify {
-    /// Creates the eventfd (Windows: the wake event). `echo_log` prints plugin log lines to
-    /// stderr (tests; never on the RT thread of a real bridge).
-    pub fn new(echo_log: bool) -> Result<LoopNotify, HostingError> {
-        let wake = Wake::new().map_err(|e| HostingError::HostLoop(format!("wake: {e}")))?;
-        Ok(LoopNotify {
+/// The RT-safe core of a main loop's [`HostNotify`], shared by [`LoopNotify`] and the bridge's
+/// `BridgeNotify` (#243): one pending bit per notification kind ([`notification_bits`], and any
+/// bits a caller defines above them), the latest GUI size request, and the wake (an eventfd on
+/// Linux, a non-blocking pipe on macOS, a manual-reset event on Windows) that the first pending
+/// bit since the last [`PendingNotifications::take`] signals. Everything but `new` and `take` is
+/// RT-safe: atomics and at most one non-blocking `write` (`SetEvent`), no allocation, no lock.
+#[derive(Debug)]
+pub struct PendingNotifications {
+    pending: AtomicU32,
+    gui_size: AtomicU64,
+    wake: Wake,
+}
+
+impl PendingNotifications {
+    /// Creates the wake fd (Windows: the wake event).
+    pub fn new() -> std::io::Result<PendingNotifications> {
+        Ok(PendingNotifications {
             pending: AtomicU32::new(0),
             gui_size: AtomicU64::new(NO_SIZE),
-            edited_id: AtomicU32::new(0),
-            edited_value: AtomicU64::new(0),
-            edited_count: AtomicU32::new(0),
-            log_lines: Default::default(),
-            echo_log,
-            wake,
+            wake: Wake::new()?,
         })
     }
 
-    /// The fd that becomes readable when a notification is pending.
+    /// The fd that is readable while something is pending.
     #[cfg(unix)]
     pub fn wake_fd(&self) -> BorrowedFd<'_> {
         self.wake.as_fd()
     }
 
-    /// Windows: the event that is signalled while a notification is pending.
+    /// Windows: the event that is signalled while something is pending.
     #[cfg(windows)]
     pub fn wake_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
         std::os::windows::io::AsHandle::as_handle(&self.wake)
     }
 
-    /// Clears the wake fd, then takes the pending bits and the latest GUI size request. Draining
-    /// first means a notification that races with this call wakes the next `poll()`.
+    /// RT. Records `notification`: its bit and, for a resize request, the size.
+    pub fn notify(&self, notification: &HostNotification) {
+        if let HostNotification::GuiResizeRequested(size) = notification {
+            self.gui_size.store(pack_size(*size), Ordering::Release);
+        }
+        self.raise(notification_bit(notification));
+    }
+
+    /// RT. Sets `bit` and wakes the loop if it was not set yet: only the first notification since
+    /// the last `take` needs to wake it (the wake never blocks; a full pipe already means readable).
+    pub fn raise(&self, bit: u32) {
+        if self.pending.fetch_or(bit, Ordering::AcqRel) & bit == 0 {
+            self.wake.signal();
+        }
+    }
+
+    /// Clears the wake, then takes the pending bits and the latest GUI size request. Draining
+    /// first means a notification that races with this call wakes the next wait.
     pub fn take(&self) -> (u32, Option<GuiSize>) {
         self.wake.drain();
         let pending = self.pending.swap(0, Ordering::AcqRel);
@@ -472,6 +479,63 @@ impl LoopNotify {
             None
         };
         (pending, size)
+    }
+
+    /// Takes only the pending bits in `mask`; the others stay pending (the next `take` gets them).
+    pub fn take_bits(&self, mask: u32) -> u32 {
+        self.pending.fetch_and(!mask, Ordering::AcqRel) & mask
+    }
+}
+
+/// A [`HostNotify`] that coalesces notifications into atomic bits and wakes a [`PollLoop`] through
+/// a wake fd (an eventfd on Linux, a non-blocking pipe on macOS) or a wake event (Windows).
+/// RT-safe: [`HostNotify::notify`] does atomics and at most one non-blocking `write` (`SetEvent`).
+///
+/// Coalescing: one bit per kind, the latest GUI size request, and for `ParamEdited` (VST3 only)
+/// only the latest id and value plus a counter; a bridge that forwards VST3 GUI edits needs a ring
+/// instead.
+#[derive(Debug)]
+pub struct LoopNotify {
+    pending: PendingNotifications,
+    edited_id: AtomicU32,
+    edited_value: AtomicU64,
+    edited_count: AtomicU32,
+    log_lines: [AtomicU32; 4],
+    echo_log: bool,
+}
+
+impl LoopNotify {
+    /// Creates the eventfd (Windows: the wake event). `echo_log` prints plugin log lines to
+    /// stderr (tests; never on the RT thread of a real bridge).
+    pub fn new(echo_log: bool) -> Result<LoopNotify, HostingError> {
+        let pending = PendingNotifications::new()
+            .map_err(|e| HostingError::HostLoop(format!("wake: {e}")))?;
+        Ok(LoopNotify {
+            pending,
+            edited_id: AtomicU32::new(0),
+            edited_value: AtomicU64::new(0),
+            edited_count: AtomicU32::new(0),
+            log_lines: Default::default(),
+            echo_log,
+        })
+    }
+
+    /// The fd that becomes readable when a notification is pending.
+    #[cfg(unix)]
+    pub fn wake_fd(&self) -> BorrowedFd<'_> {
+        self.pending.wake_fd()
+    }
+
+    /// Windows: the event that is signalled while a notification is pending.
+    #[cfg(windows)]
+    pub fn wake_handle(&self) -> std::os::windows::io::BorrowedHandle<'_> {
+        self.pending.wake_handle()
+    }
+
+    /// Clears the wake fd, then takes the pending bits and the latest GUI size request
+    /// ([`PendingNotifications::take`]).
+    pub fn take(&self) -> (u32, Option<GuiSize>) {
+        self.pending.take()
     }
 
     /// Number of `ParamEdited` notifications so far and the latest one.
@@ -494,22 +558,12 @@ impl LoopNotify {
 
 impl HostNotify for LoopNotify {
     fn notify(&self, notification: HostNotification) {
-        match notification {
-            HostNotification::GuiResizeRequested(size) => {
-                self.gui_size.store(pack_size(size), Ordering::Release);
-            }
-            HostNotification::ParamEdited { id, value } => {
-                self.edited_id.store(id, Ordering::Release);
-                self.edited_value.store(value.to_bits(), Ordering::Release);
-                self.edited_count.fetch_add(1, Ordering::AcqRel);
-            }
-            _ => {}
+        if let HostNotification::ParamEdited { id, value } = notification {
+            self.edited_id.store(id, Ordering::Release);
+            self.edited_value.store(value.to_bits(), Ordering::Release);
+            self.edited_count.fetch_add(1, Ordering::AcqRel);
         }
-        let bit = notification_bit(&notification);
-        // Only the first notification since the last `take` needs to wake the loop.
-        if self.pending.fetch_or(bit, Ordering::AcqRel) & bit == 0 {
-            self.wake.signal();
-        }
+        self.pending.notify(&notification);
     }
 
     fn log(&self, level: LogLevel, message: &str) {
@@ -579,12 +633,173 @@ struct FdEntry {
     parked: bool,
 }
 
+/// The fds a plugin registered with a main loop, with the fd policies of the module docs: `READ`
+/// as `POLLIN`, `WRITE` as `POLLOUT` only after the write cooldown, `ERROR` always, an fd that
+/// reports `POLLNVAL` parked until it is modified. [`PollLoop`] and the bridge's event loop poll
+/// through it (#243). Main thread only.
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct PluginFds {
+    entries: Vec<FdEntry>,
+    write_interval: Duration,
+}
+
+#[cfg(unix)]
+impl PluginFds {
+    /// No fds yet; `write_interval` is the cooldown between two `WRITE` reports of an fd.
+    pub fn new(write_interval: Duration) -> PluginFds {
+        PluginFds {
+            entries: Vec::new(),
+            write_interval,
+        }
+    }
+
+    /// The cooldown between two `WRITE` reports of an fd.
+    pub fn write_interval(&self) -> Duration {
+        self.write_interval
+    }
+
+    /// Number of registered fds.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether no fd is registered.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The interest registered for `fd`, `None` if it is not registered.
+    pub fn interest(&self, fd: RawFd) -> Option<FdEvents> {
+        self.entries.iter().find(|e| e.fd == fd).map(|e| e.interest)
+    }
+
+    /// [`HostLoop::register_fd`]: an error for a negative or already registered fd.
+    pub fn register(&mut self, fd: RawFd, events: FdEvents) -> Result<(), HostingError> {
+        if fd < 0 || self.interest(fd).is_some() {
+            return Err(HostingError::HostLoop(format!(
+                "fd {fd} is invalid or already registered"
+            )));
+        }
+        self.entries.push(FdEntry {
+            fd,
+            interest: events,
+            write_after: Instant::now(),
+            parked: false,
+        });
+        Ok(())
+    }
+
+    /// [`HostLoop::modify_fd`]: the new interest; also un-parks the fd.
+    pub fn modify(&mut self, fd: RawFd, events: FdEvents) -> Result<(), HostingError> {
+        let entry = self
+            .entries
+            .iter_mut()
+            .find(|e| e.fd == fd)
+            .ok_or_else(|| HostingError::HostLoop(format!("unknown fd {fd}")))?;
+        entry.interest = events;
+        entry.parked = false;
+        Ok(())
+    }
+
+    /// [`HostLoop::unregister_fd`].
+    pub fn unregister(&mut self, fd: RawFd) -> Result<(), HostingError> {
+        let before = self.entries.len();
+        self.entries.retain(|e| e.fd != fd);
+        if self.entries.len() == before {
+            return Err(HostingError::HostLoop(format!("unknown fd {fd}")));
+        }
+        Ok(())
+    }
+
+    /// One `poll()` over `extra` (the caller's own fds, e.g. a wake fd or a control socket; their
+    /// `revents` are filled in, or cleared if the poll failed) and the plugin's fds, until
+    /// `deadline`, or earlier when a write cooldown ends. Returns the ready plugin fds with what
+    /// they are ready for (no callback runs here, so the caller dispatches outside every borrow
+    /// and checks that each fd is still registered); updates the cooldowns and parks fds that
+    /// reported `POLLNVAL`.
+    pub fn poll(&mut self, extra: &mut [PollFd<'_>], deadline: Instant) -> Vec<(RawFd, FdEvents)> {
+        // 1. The plugin's part of the poll set, and the timeout.
+        let now = Instant::now();
+        let mut deadline = deadline;
+        let mut wanted: Vec<(RawFd, PollFlags)> = Vec::with_capacity(self.entries.len());
+        for entry in self.entries.iter().filter(|e| !e.parked) {
+            let mut flags = PollFlags::empty();
+            if entry.interest.contains(FdEvents::READ) {
+                flags |= PollFlags::IN;
+            }
+            if entry.interest.contains(FdEvents::WRITE) {
+                if now >= entry.write_after {
+                    flags |= PollFlags::OUT;
+                } else {
+                    deadline = deadline.min(entry.write_after);
+                }
+            }
+            wanted.push((entry.fd, flags));
+        }
+        let timeout = deadline.saturating_duration_since(now);
+        let timespec = Timespec {
+            tv_sec: timeout.as_secs() as i64,
+            tv_nsec: i64::from(timeout.subsec_nanos()),
+        };
+
+        // `extra` and the plugin fds in one array; `extra`'s results are copied back.
+        let mut pollfds: Vec<PollFd<'_>> = Vec::with_capacity(extra.len() + wanted.len());
+        pollfds.extend_from_slice(extra);
+        for &(fd, flags) in &wanted {
+            // SAFETY: the plugin registered `fd` and keeps it open until it unregisters it; a
+            // closed fd only yields POLLNVAL.
+            let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+            pollfds.push(PollFd::from_borrowed_fd(borrowed, flags));
+        }
+        let polled = rustix::event::poll(&mut pollfds, Some(&timespec)).is_ok();
+        for (slot, result) in extra.iter_mut().zip(&pollfds) {
+            slot.clear_revents();
+            if polled {
+                *slot = result.clone();
+            }
+        }
+        let mut ready = Vec::new();
+        if !polled {
+            return ready;
+        }
+
+        // 2. Ready plugin fds; update cooldowns and parking.
+        let now = Instant::now();
+        for (pollfd, &(fd, _)) in pollfds[extra.len()..].iter().zip(&wanted) {
+            let revents = pollfd.revents();
+            if revents.is_empty() {
+                continue;
+            }
+            let Some(entry) = self.entries.iter_mut().find(|e| e.fd == fd) else {
+                continue;
+            };
+            let mut events = FdEvents::NONE;
+            if revents.contains(PollFlags::IN) && entry.interest.contains(FdEvents::READ) {
+                events = events.union(FdEvents::READ);
+            }
+            if revents.contains(PollFlags::OUT) && entry.interest.contains(FdEvents::WRITE) {
+                events = events.union(FdEvents::WRITE);
+                entry.write_after = now + self.write_interval;
+            }
+            if revents.intersects(PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL) {
+                events = events.union(FdEvents::ERROR);
+            }
+            if revents.contains(PollFlags::NVAL) {
+                entry.parked = true;
+            }
+            if events != FdEvents::NONE {
+                ready.push((fd, events));
+            }
+        }
+        ready
+    }
+}
+
 #[derive(Debug, Default)]
 struct LoopState {
     next_timer: u32,
     timers: Vec<TimerEntry>,
-    #[cfg(unix)]
-    fds: Vec<FdEntry>,
 }
 
 /// A single-threaded `poll()` loop implementing [`HostLoop`] for one plugin instance (see the
@@ -592,8 +807,9 @@ struct LoopState {
 #[derive(Debug)]
 pub struct PollLoop {
     state: RefCell<LoopState>,
+    #[cfg(unix)]
+    fds: RefCell<PluginFds>,
     notify: Arc<LoopNotify>,
-    write_interval: Option<Duration>,
     observed: RefCell<Observed>,
     stats: Cell<LoopStats>,
     /// Windows: the deadline of each wait.
@@ -604,18 +820,21 @@ pub struct PollLoop {
 impl PollLoop {
     /// A loop with the default write interval. `echo_log` prints plugin log lines to stderr.
     pub fn new(echo_log: bool) -> Result<Rc<PollLoop>, HostingError> {
-        PollLoop::with_write_interval(echo_log, Some(DEFAULT_WRITE_INTERVAL))
+        PollLoop::with_write_interval(echo_log, DEFAULT_WRITE_INTERVAL)
     }
 
-    /// A loop with an explicit write cooldown; `None` never polls for `WRITE`.
+    /// A loop with an explicit write cooldown (unused on Windows, which has no fds).
     pub fn with_write_interval(
         echo_log: bool,
-        write_interval: Option<Duration>,
+        write_interval: Duration,
     ) -> Result<Rc<PollLoop>, HostingError> {
+        #[cfg(windows)]
+        let _ = write_interval;
         Ok(Rc::new(PollLoop {
             state: RefCell::new(LoopState::default()),
+            #[cfg(unix)]
+            fds: RefCell::new(PluginFds::new(write_interval)),
             notify: Arc::new(LoopNotify::new(echo_log)?),
-            write_interval,
             observed: RefCell::new(Observed::default()),
             stats: Cell::new(LoopStats::default()),
             #[cfg(windows)]
@@ -625,8 +844,9 @@ impl PollLoop {
     }
 
     /// The write cooldown (see the module docs).
-    pub fn write_interval(&self) -> Option<Duration> {
-        self.write_interval
+    #[cfg(unix)]
+    pub fn write_interval(&self) -> Duration {
+        self.fds.borrow().write_interval()
     }
 
     /// The notification sink that wakes this loop.
@@ -646,19 +866,17 @@ impl PollLoop {
 
     /// Number of registered timers and fds (always 0 fds on Windows).
     pub fn registrations(&self) -> (usize, usize) {
-        let state = self.state.borrow();
         #[cfg(unix)]
-        let fds = state.fds.len();
+        let fds = self.fds.borrow().len();
         #[cfg(windows)]
         let fds = 0;
-        (state.timers.len(), fds)
+        (self.state.borrow().timers.len(), fds)
     }
 
     /// The interest registered for `fd`.
     #[cfg(unix)]
     pub fn fd_interest(&self, fd: RawFd) -> Option<FdEvents> {
-        let state = self.state.borrow();
-        state.fds.iter().find(|e| e.fd == fd).map(|e| e.interest)
+        self.fds.borrow().interest(fd)
     }
 
     /// Counters since creation.
@@ -732,86 +950,16 @@ impl PollLoop {
     /// One `poll()` over the wake fd and the plugin's fds, then the ready fds' callbacks.
     #[cfg(unix)]
     fn poll_fds(&self, plugin: &mut dyn HostedPlugin, max_wait: Duration, stats: &mut LoopStats) {
-        // 1. Build the poll set and the timeout.
-        let now = Instant::now();
-        let mut deadline = now + max_wait;
-        let mut wanted: Vec<(RawFd, PollFlags)> = Vec::new();
-        {
-            let state = self.state.borrow();
-            for timer in &state.timers {
-                deadline = deadline.min(timer.next);
-            }
-            for entry in &state.fds {
-                if entry.parked {
-                    continue;
-                }
-                let mut flags = PollFlags::empty();
-                if entry.interest.contains(FdEvents::READ) {
-                    flags |= PollFlags::IN;
-                }
-                if entry.interest.contains(FdEvents::WRITE) && self.write_interval.is_some() {
-                    if now >= entry.write_after {
-                        flags |= PollFlags::OUT;
-                    } else {
-                        deadline = deadline.min(entry.write_after);
-                    }
-                }
-                wanted.push((entry.fd, flags));
-            }
+        // 1.–2. Wait until `max_wait`, the next due timer or a write cooldown, collect ready fds.
+        let mut deadline = Instant::now() + max_wait;
+        for timer in &self.state.borrow().timers {
+            deadline = deadline.min(timer.next);
         }
-        let timeout = deadline.saturating_duration_since(now);
-        let mut pollfds = Vec::with_capacity(wanted.len() + 1);
-        pollfds.push(PollFd::from_borrowed_fd(
+        let mut wake = [PollFd::from_borrowed_fd(
             self.notify.wake_fd(),
             PollFlags::IN,
-        ));
-        for &(fd, flags) in &wanted {
-            // SAFETY: the plugin registered `fd` and keeps it open until it unregisters it; a
-            // closed fd only yields POLLNVAL.
-            let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
-            pollfds.push(PollFd::from_borrowed_fd(borrowed, flags));
-        }
-        let timespec = Timespec {
-            tv_sec: timeout.as_secs() as i64,
-            tv_nsec: i64::from(timeout.subsec_nanos()),
-        };
-        let polled = rustix::event::poll(&mut pollfds, Some(&timespec)).is_ok();
-
-        // 2. Collect ready fds; update cooldowns and parking while the state is borrowed.
-        let mut ready: Vec<(RawFd, FdEvents)> = Vec::new();
-        let now = Instant::now();
-        if polled {
-            let mut state = self.state.borrow_mut();
-            for (pollfd, &(fd, _)) in pollfds[1..].iter().zip(&wanted) {
-                let revents = pollfd.revents();
-                if revents.is_empty() {
-                    continue;
-                }
-                let Some(entry) = state.fds.iter_mut().find(|e| e.fd == fd) else {
-                    continue;
-                };
-                let mut events = FdEvents::NONE;
-                if revents.contains(PollFlags::IN) && entry.interest.contains(FdEvents::READ) {
-                    events = events.union(FdEvents::READ);
-                }
-                if revents.contains(PollFlags::OUT) && entry.interest.contains(FdEvents::WRITE) {
-                    events = events.union(FdEvents::WRITE);
-                    if let Some(interval) = self.write_interval {
-                        entry.write_after = now + interval;
-                    }
-                }
-                if revents.intersects(PollFlags::ERR | PollFlags::HUP | PollFlags::NVAL) {
-                    events = events.union(FdEvents::ERROR);
-                }
-                if revents.contains(PollFlags::NVAL) {
-                    entry.parked = true;
-                }
-                if events != FdEvents::NONE {
-                    ready.push((fd, events));
-                }
-            }
-        }
-        drop(pollfds);
+        )];
+        let ready = self.fds.borrow_mut().poll(&mut wake, deadline);
 
         // 3. Dispatch fds, each only if still registered (a callback may unregister another).
         for (fd, events) in ready {
@@ -906,43 +1054,17 @@ impl HostLoop for PollLoop {
 
     #[cfg(unix)]
     fn register_fd(&self, fd: RawFd, events: FdEvents) -> Result<(), HostingError> {
-        let mut state = self.state.borrow_mut();
-        if fd < 0 || state.fds.iter().any(|e| e.fd == fd) {
-            return Err(HostingError::HostLoop(format!(
-                "fd {fd} is invalid or already registered"
-            )));
-        }
-        state.fds.push(FdEntry {
-            fd,
-            interest: events,
-            write_after: Instant::now(),
-            parked: false,
-        });
-        Ok(())
+        self.fds.borrow_mut().register(fd, events)
     }
 
     #[cfg(unix)]
     fn modify_fd(&self, fd: RawFd, events: FdEvents) -> Result<(), HostingError> {
-        let mut state = self.state.borrow_mut();
-        let entry = state
-            .fds
-            .iter_mut()
-            .find(|e| e.fd == fd)
-            .ok_or_else(|| HostingError::HostLoop(format!("unknown fd {fd}")))?;
-        entry.interest = events;
-        entry.parked = false;
-        Ok(())
+        self.fds.borrow_mut().modify(fd, events)
     }
 
     #[cfg(unix)]
     fn unregister_fd(&self, fd: RawFd) -> Result<(), HostingError> {
-        let mut state = self.state.borrow_mut();
-        let before = state.fds.len();
-        state.fds.retain(|e| e.fd != fd);
-        if state.fds.len() == before {
-            return Err(HostingError::HostLoop(format!("unknown fd {fd}")));
-        }
-        Ok(())
+        self.fds.borrow_mut().unregister(fd)
     }
 }
 
@@ -955,7 +1077,7 @@ mod tests {
     #[cfg(unix)]
     use std::io::Write;
     #[cfg(unix)]
-    use std::os::fd::AsRawFd;
+    use std::os::fd::{AsFd, AsRawFd};
     #[cfg(unix)]
     use std::os::unix::net::UnixStream;
 
@@ -1171,14 +1293,15 @@ mod tests {
                 .all(|c| *c == Call::Fd(fd, FdEvents::WRITE))
         );
 
-        // Write polling off: no WRITE callbacks at all.
-        let lp = PollLoop::with_write_interval(false, None).unwrap();
+        // A longer cooldown: fewer WRITE callbacks, never none.
+        let lp = PollLoop::with_write_interval(false, Duration::from_millis(200)).unwrap();
+        assert_eq!(lp.write_interval(), Duration::from_millis(200));
         let mut plugin = FakePlugin::new();
         lp.register_fd(fd, FdEvents::READ.union(FdEvents::WRITE))
             .unwrap();
-        lp.run_for(&mut plugin, Duration::from_millis(100));
-        assert_eq!(lp.stats().write_calls, 0);
-        assert!(plugin.calls.is_empty());
+        lp.run_for(&mut plugin, Duration::from_millis(500));
+        let write_calls = lp.stats().write_calls;
+        assert!((2..=4).contains(&write_calls), "{write_calls} in 500 ms");
     }
 
     #[cfg(unix)]
@@ -1270,6 +1393,133 @@ mod tests {
             })
         );
         assert_eq!(notify.take(), (0, None));
+    }
+
+    /// The fd core alone (#243): the caller's fds and the plugin's in one `poll()`, registration
+    /// errors, the write cooldown as the poll's deadline, and `POLLNVAL` parking.
+    #[cfg(unix)]
+    #[test]
+    fn plugin_fds_share_one_poll_with_the_callers_fds() {
+        let mut fds = PluginFds::new(Duration::from_millis(40));
+        assert!(fds.is_empty());
+        let (control, mut app) = UnixStream::pair().unwrap();
+        let (plugin, mut other) = UnixStream::pair().unwrap();
+        let fd = plugin.as_raw_fd();
+        fds.register(fd, FdEvents::READ).unwrap();
+        assert!(fds.register(fd, FdEvents::READ).is_err());
+        assert!(fds.register(-1, FdEvents::READ).is_err());
+        assert_eq!(fds.interest(fd), Some(FdEvents::READ));
+
+        // Nothing ready: the poll lasts until the deadline.
+        let mut extra = [PollFd::new(&control, PollFlags::IN)];
+        let t0 = Instant::now();
+        assert!(
+            fds.poll(&mut extra, t0 + Duration::from_millis(20))
+                .is_empty()
+        );
+        assert!(t0.elapsed() >= Duration::from_millis(15));
+        assert!(extra[0].revents().is_empty());
+        // The caller's fd: its revents, no plugin fd.
+        app.write_all(b"x").unwrap();
+        let later = Instant::now() + Duration::from_secs(5);
+        assert!(fds.poll(&mut extra, later).is_empty());
+        assert!(extra[0].revents().contains(PollFlags::IN));
+        // The plugin's fd, the caller's fd not asked for anything.
+        other.write_all(b"y").unwrap();
+        let mut extra = [PollFd::from_borrowed_fd(
+            control.as_fd(),
+            PollFlags::empty(),
+        )];
+        assert_eq!(fds.poll(&mut extra, later), [(fd, FdEvents::READ)]);
+        assert!(extra[0].revents().is_empty());
+
+        // WRITE on an always-writable fd: reported at once, then only after the cooldown, which
+        // also ends the poll before its deadline.
+        fds.modify(fd, FdEvents::WRITE).unwrap();
+        assert_eq!(fds.poll(&mut [], later), [(fd, FdEvents::WRITE)]);
+        let t0 = Instant::now();
+        assert_eq!(fds.poll(&mut [], later), []);
+        assert_eq!(fds.poll(&mut [], later), [(fd, FdEvents::WRITE)]);
+        let waited = t0.elapsed();
+        assert!(
+            (Duration::from_millis(30)..Duration::from_secs(1)).contains(&waited),
+            "{waited:?}"
+        );
+
+        fds.unregister(fd).unwrap();
+        assert!(fds.unregister(fd).is_err() && fds.modify(fd, FdEvents::READ).is_err());
+
+        // Never a valid fd (far above RLIMIT_NOFILE): reported once with ERROR, then parked
+        // until modified.
+        let closed: RawFd = 999_998;
+        fds.register(closed, FdEvents::READ).unwrap();
+        let soon = || Instant::now() + Duration::from_millis(10);
+        assert_eq!(fds.poll(&mut [], soon()), [(closed, FdEvents::ERROR)]);
+        assert_eq!(fds.poll(&mut [], soon()), []);
+        fds.modify(closed, FdEvents::READ).unwrap();
+        assert_eq!(fds.poll(&mut [], soon()), [(closed, FdEvents::ERROR)]);
+        assert_eq!(fds.len(), 1);
+    }
+
+    #[cfg(unix)]
+    fn readable(pending: &PendingNotifications) -> bool {
+        let mut fds = [PollFd::from_borrowed_fd(pending.wake_fd(), PollFlags::IN)];
+        let zero = Timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        rustix::event::poll(&mut fds, Some(&zero)).unwrap() == 1
+    }
+
+    #[cfg(windows)]
+    fn readable(pending: &PendingNotifications) -> bool {
+        use std::os::windows::io::AsRawHandle;
+        // SAFETY: a valid event handle; a zero timeout only tests its state.
+        unsafe {
+            windows_sys::Win32::System::Threading::WaitForSingleObject(
+                pending.wake_handle().as_raw_handle(),
+                0,
+            ) == windows_sys::Win32::Foundation::WAIT_OBJECT_0
+        }
+    }
+
+    /// The notify core alone (#243): bits coalesce, the latest size wins, the wake is set until
+    /// `take`, a caller's own bits above `notification_bits` work, `take_bits` leaves the rest.
+    #[test]
+    fn pending_notifications_coalesce_and_wake() {
+        const CALLER_BIT: u32 = 1 << 31;
+        let pending = PendingNotifications::new().unwrap();
+        assert!(!readable(&pending));
+        assert_no_alloc::assert_no_alloc(|| {
+            pending.notify(&HostNotification::MainThreadCallback);
+            pending.notify(&HostNotification::MainThreadCallback);
+            pending.notify(&HostNotification::GuiResizeRequested(GuiSize {
+                width: 300,
+                height: 200,
+            }));
+            pending.notify(&HostNotification::GuiResizeRequested(GuiSize {
+                width: 640,
+                height: 480,
+            }));
+            pending.raise(CALLER_BIT);
+        });
+        assert!(readable(&pending));
+        assert_eq!(pending.take_bits(CALLER_BIT), CALLER_BIT);
+        assert_eq!(pending.take_bits(CALLER_BIT), 0);
+        let (bits, size) = pending.take();
+        assert_eq!(
+            bits,
+            bits::MAIN_THREAD_CALLBACK | bits::GUI_RESIZE_REQUESTED
+        );
+        assert_eq!(
+            size,
+            Some(GuiSize {
+                width: 640,
+                height: 480
+            })
+        );
+        assert!(!readable(&pending));
+        assert_eq!(pending.take(), (0, None));
     }
 
     /// Windows: a window message posted to the loop's thread wakes the wait and is dispatched

@@ -60,9 +60,13 @@ use rustix::fs::fstat;
 use rustix::mm::{MapFlags, ProtFlags, mlock, mmap, munmap};
 
 use komponist_plugin_api::signal_taps;
+use komponist_rt::os_sync::WaitOutcome;
+#[cfg(unix)]
+use komponist_rt::os_sync::{self, Scope};
 
 use crate::ring::ShmRing;
-use crate::signal::{self, WaitOutcome};
+#[cfg(windows)]
+use crate::signal;
 
 /// `b"KPSM"` as little-endian `u32`, the first header field.
 pub const SHM_MAGIC: u32 = u32::from_le_bytes(*b"KPSM");
@@ -647,7 +651,7 @@ impl ShmRegion {
     /// RT: wakes the waiter of `word` (in the other process). Store the word first (release).
     fn wake(&self, word: Word) {
         #[cfg(unix)]
-        signal::wake(self.word(word));
+        os_sync::wake(self.word(word), os_sync::WAKE_ALL, Scope::Shared);
         #[cfg(windows)]
         self.os.event(word).wake();
     }
@@ -657,7 +661,7 @@ impl ShmRegion {
     fn wait_while(&self, word: Word, current: u32, deadline: Option<Instant>) -> WaitOutcome {
         #[cfg(unix)]
         {
-            signal::wait_while(self.word(word), current, deadline)
+            os_sync::wait_while(self.word(word), current, deadline, Scope::Shared)
         }
         #[cfg(windows)]
         {
