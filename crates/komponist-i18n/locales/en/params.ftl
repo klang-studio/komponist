@@ -632,6 +632,8 @@ param-general-sampler-saw-up = Rising saw
 param-general-sampler-saw-down = Falling saw
 param-general-sampler-square = Square
 param-general-sampler-sample-hold = Sample & hold
+# General-Sampler LFO shape: from one random value to the next without steps.
+param-general-sampler-smooth-random = Smooth random
 param-general-sampler-lfo-rate = LFO rate
 param-general-sampler-lfo-target = LFO target
 param-general-sampler-lfo-depth = LFO depth

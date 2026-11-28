@@ -4,6 +4,17 @@
 //! keeps the timing (one step per sample, the value read before the step, the rounded
 //! [`phase::increment`]), the voice RNG it shares with the noise source and the order of its
 //! draws, and the free-running `f32` phase per pad (in [`crate::engine`]).
+//!
+//! # Random draws
+//!
+//! The LFO draws from the voice RNG (in `Voice`: after the per-note random value at the
+//! note start; per sample before the noise source). Every shape but Smooth Random draws one value
+//! in [`Lfo::reset`] and one on every wrap in [`Lfo::next`] (the held value of
+//! [`LfoShape::SampleHold`]; the periodic shapes draw it too and ignore it, so adding Smooth Random
+//! left their sequence alone). [`LfoShape::SmoothRandom`] draws two values in `reset`, the held
+//! value first and then the next one, and one next value on every wrap, so it glides on from where
+//! the last cycle ended. A voice whose shape changes to Smooth Random while it sounds glides towards
+//! the next value it had (0 if it never had one) until its next wrap.
 
 use klang_dsp::phase;
 use klang_synth::{CyclicLfo, Shape};
@@ -29,6 +40,8 @@ pub enum LfoShape {
     SawDown,
     Square,
     SampleHold,
+    /// From one random value to the next over every cycle, without steps (smoothstep).
+    SmoothRandom,
 }
 
 impl LfoShape {
@@ -42,6 +55,7 @@ impl LfoShape {
             LfoShape::SawDown => Shape::SawDown,
             LfoShape::Square => Shape::Square,
             LfoShape::SampleHold => Shape::SampleHold,
+            LfoShape::SmoothRandom => Shape::SmoothRandom,
         }
     }
 }
@@ -53,10 +67,16 @@ pub struct Lfo {
 }
 
 impl Lfo {
-    /// Moves to `phase` (in periods) and draws a new sample-and-hold value from `rng`.
-    pub fn reset(&mut self, phase: f32, rng: &mut Rng) {
+    /// Moves to `phase` (in periods) and draws the random values of `shape` from `rng`: one, or
+    /// for Smooth Random two (held, then next); see the module documentation.
+    pub fn reset(&mut self, shape: LfoShape, phase: f32, rng: &mut Rng) {
         self.lfo.set_phase(phase::from_unit(phase));
-        self.lfo.set_held(rng.bipolar());
+        let held = rng.bipolar();
+        if shape == LfoShape::SmoothRandom {
+            self.lfo.set_random(held, rng.bipolar());
+        } else {
+            self.lfo.set_held(held);
+        }
     }
 
     /// The value at the current phase without advancing.
@@ -65,13 +85,18 @@ impl Lfo {
         self.lfo.value(shape.shape())
     }
 
-    /// Returns the current value and advances by one sample; a new cycle draws the next
-    /// sample-and-hold value from `rng`.
+    /// Returns the current value and advances by one sample; a new cycle draws one random value
+    /// from `rng` (the held value, or for Smooth Random the next one).
     #[inline]
     pub fn next(&mut self, shape: LfoShape, freq_hz: f32, sample_rate: f32, rng: &mut Rng) -> f32 {
         let out = self.value(shape);
         if self.lfo.advance(phase::increment(freq_hz, sample_rate)) {
-            self.lfo.set_held(rng.bipolar());
+            let value = rng.bipolar();
+            if shape == LfoShape::SmoothRandom {
+                self.lfo.push_random(value);
+            } else {
+                self.lfo.set_held(value);
+            }
         }
         out
     }
@@ -227,7 +252,7 @@ mod tests {
             LfoShape::Square,
         ] {
             let mut lfo = Lfo::default();
-            lfo.reset(0.0, &mut rng);
+            lfo.reset(shape, 0.0, &mut rng);
             let values: Vec<f32> = (0..1000)
                 .map(|_| lfo.next(shape, 1.0, 1000.0, &mut rng))
                 .collect();
@@ -242,12 +267,69 @@ mod tests {
     fn sample_hold_changes_once_per_cycle() {
         let mut rng = Rng::new(42);
         let mut lfo = Lfo::default();
-        lfo.reset(0.0, &mut rng);
+        lfo.reset(LfoShape::SampleHold, 0.0, &mut rng);
         let values: Vec<f32> = (0..20)
             .map(|_| lfo.next(LfoShape::SampleHold, 100.0, 1000.0, &mut rng))
             .collect();
         assert!(values[..10].iter().all(|v| *v == values[0]));
         assert_ne!(values[0], values[10]);
+    }
+
+    #[test]
+    fn smooth_random_draws_two_at_reset_and_one_per_wrap() {
+        let mut draws = Rng::new(7);
+        let r: Vec<f32> = (0..5).map(|_| draws.bipolar()).collect();
+        let mut rng = Rng::new(7);
+        let mut lfo = Lfo::default();
+        lfo.reset(LfoShape::SmoothRandom, 0.0, &mut rng);
+        assert_eq!((lfo.lfo.held(), lfo.lfo.next_random()), (r[0], r[1]));
+        assert_eq!(lfo.value(LfoShape::SmoothRandom), r[0]);
+        // 100 Hz at 1 kHz: ten samples per cycle, the tenth wraps.
+        for _ in 0..9 {
+            lfo.next(LfoShape::SmoothRandom, 100.0, 1000.0, &mut rng);
+        }
+        assert_eq!(lfo.lfo.held(), r[0]);
+        lfo.next(LfoShape::SmoothRandom, 100.0, 1000.0, &mut rng);
+        assert_eq!((lfo.lfo.held(), lfo.lfo.next_random()), (r[1], r[2]));
+        assert_eq!(rng.bipolar(), r[3]);
+    }
+
+    #[test]
+    fn other_shapes_draw_once_at_reset_and_per_wrap() {
+        use LfoShape::*;
+        for shape in [Sine, Triangle, SawUp, SawDown, Square, SampleHold] {
+            let mut draws = Rng::new(7);
+            let r: Vec<f32> = (0..3).map(|_| draws.bipolar()).collect();
+            let mut rng = Rng::new(7);
+            let mut lfo = Lfo::default();
+            lfo.reset(shape, 0.0, &mut rng);
+            assert_eq!(lfo.lfo.held(), r[0], "{shape:?}");
+            for _ in 0..10 {
+                lfo.next(shape, 100.0, 1000.0, &mut rng);
+            }
+            assert_eq!(lfo.lfo.held(), r[1], "{shape:?}");
+            assert_eq!(rng.bipolar(), r[2], "{shape:?}");
+        }
+    }
+
+    #[test]
+    fn smooth_random_glides_across_wraps_within_range() {
+        let mut rng = Rng::new(42);
+        let mut lfo = Lfo::default();
+        lfo.reset(LfoShape::SmoothRandom, 0.0, &mut rng);
+        let mut last = lfo.value(LfoShape::SmoothRandom);
+        let (mut low, mut high) = (f32::MAX, f32::MIN);
+        // Ten cycles of 1000 samples.
+        for i in 0..10_000 {
+            let out = lfo.next(LfoShape::SmoothRandom, 1.0, 1000.0, &mut rng);
+            assert_eq!(out, last, "the value before the step, sample {i}");
+            last = lfo.value(LfoShape::SmoothRandom);
+            // Largest step mid-cycle: 1.5 · |next − held| / 1000 ≤ 3e-3; none at a wrap.
+            assert!((last - out).abs() < 3.1e-3, "step {out} → {last} at {i}");
+            assert!((-1.0..=1.0).contains(&last));
+            (low, high) = (low.min(last), high.max(last));
+        }
+        assert!(high - low > 0.5, "barely moves: {low}..{high}");
     }
 
     #[test]
