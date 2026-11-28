@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 
 use komponist_app::actions::PluginAction;
-use komponist_app::project_io::{load_project, save_project};
 use komponist_app::{Action, App, ProjectAction};
 use komponist_engine::Command;
 use komponist_model::edits::{self, NewTrack};
@@ -17,6 +16,7 @@ use komponist_plugin_api::device_assets::AssetStatus;
 use komponist_plugin_api::waveform_markers::SliceOptions;
 use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerEvent};
 use komponist_session::device_host::{PluginCatalogHost, PluginHost, ProcessorHost};
+use komponist_session::project_io::{load_project, save_project};
 use serde_json::{Value, json};
 
 use crate::acceptance_support::harness;

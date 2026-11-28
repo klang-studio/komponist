@@ -265,7 +265,7 @@ impl App {
                 self.user_presets.write = Some(file_job(move || {
                     let encoded =
                         serde_json::to_string(&preset).map_err(|error| error.to_string())?;
-                    match crate::project_io::write_atomic(&path, &encoded, false) {
+                    match komponist_session::project_io::write_atomic(&path, &encoded, false) {
                         Ok(None) => Ok(()),
                         Ok(Some(error)) => Err(format!(
                             "preset was written but could not be flushed: {error}"

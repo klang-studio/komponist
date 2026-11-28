@@ -211,10 +211,16 @@ impl App {
         let mut recent_path = settings_path.as_deref().map(project_io::recent_path);
         // An unreadable list is reported and left alone, like the settings file: this session
         // keeps an in-memory list and never overwrites the file.
-        let recent = match recent_path.as_deref().map(RecentList::load) {
-            Some(Ok(list)) => list,
-            Some(Err(e)) => {
-                eprintln!("komponist: recent projects not loaded, keeping the file: {e}");
+        let recent = match recent_path
+            .as_deref()
+            .map(|path| (path, RecentList::load(path)))
+        {
+            Some((_, Ok(list))) => list,
+            Some((path, Err(e))) => {
+                eprintln!(
+                    "komponist: recent projects not loaded, keeping the file: {}: {e}",
+                    path.display()
+                );
                 recent_path = None;
                 RecentList::default()
             }
@@ -3884,7 +3890,7 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let path = scratch.path().join("Checkpoint.komponist");
         assert!(app.save_to(&path));
-        let checkpoint = crate::project_io::load_project(&path).unwrap();
+        let checkpoint = komponist_session::project_io::load_project(&path).unwrap();
         let name = app.lang.record_take_incomplete(1);
         assert_eq!(checkpoint.track(track).unwrap().clips[0].name, name);
         assert!(app.project().track(track).unwrap().clips.is_empty());

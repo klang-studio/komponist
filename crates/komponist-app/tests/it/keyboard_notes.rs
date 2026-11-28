@@ -200,7 +200,7 @@ fn opening_a_project_that_reuses_ids_does_not_receive_old_key_releases() {
     replacement.name = "Replacement".into();
     let dir = crate::acceptance_support::scratch("keyboard-document");
     let path = dir.join("replacement.komponist");
-    komponist_app::project_io::save_project(&path, &replacement).unwrap();
+    komponist_session::project_io::save_project(&path, &replacement).unwrap();
     key(&mut h, Key::A, true);
     h.state_mut()
         .dispatch(Action::Project(ProjectAction::OpenPath(path)));

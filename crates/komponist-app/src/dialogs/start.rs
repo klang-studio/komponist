@@ -153,8 +153,9 @@ pub fn recent_row(
     now: SystemTime,
 ) -> RecentRow {
     let path_label = format::tilde(&path);
-    let file_name =
-        || crate::project_io::name_from_path(&path).unwrap_or_else(|| path_label.clone());
+    let file_name = || {
+        komponist_session::project_io::name_from_path(&path).unwrap_or_else(|| path_label.clone())
+    };
     match summary {
         Some(s) => {
             let date = match (s.modified.and_then(format::local), format::local(now)) {
@@ -868,7 +869,7 @@ impl crate::App {
                 .dropped_files
                 .iter()
                 .map(|f| f.path().to_path_buf())
-                .find(|p| crate::project_io::is_project_file(p))
+                .find(|p| komponist_session::project_io::is_project_file(p))
         });
         if let Some(path) = dropped {
             outputs.push(Output::OpenRecent(path));

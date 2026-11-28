@@ -1613,7 +1613,8 @@ fn trimmed_clip_automation_points_are_preserved_and_inactive_until_restored() {
 
 #[test]
 fn reopening_a_clip_from_a_new_document_clears_automation_view_state() {
-    use komponist_app::{ProjectAction, project_io::save_project};
+    use komponist_app::ProjectAction;
+    use komponist_session::project_io::save_project;
 
     let (app, clip, _) = lead_a_with_clip_automation();
     let mut replacement = (**app.project()).clone();

@@ -18,7 +18,6 @@ use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::dialogs::recovery::{self as prompt, Answer, Model, Variant};
 use komponist_app::dialogs::start;
-use komponist_app::project_io;
 use komponist_app::recovery::{self, EndedBy, Id, RecoveryMeta};
 use komponist_app::settings::Settings;
 use komponist_app::ui_state::{Screen, StartView};
@@ -29,6 +28,7 @@ use komponist_model::fixtures::demo_project;
 use komponist_model::{Document, Project};
 use komponist_session::device_host::PluginCatalogHost;
 use komponist_session::engine_sync::EngineSync;
+use komponist_session::project_io;
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;

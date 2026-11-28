@@ -13,7 +13,9 @@ to the plugin bridge. The library also supports headless acceptance tests.
   views.
 - [komponist-session](../komponist-session/src/lib.rs) — Synchronizes document changes to the engine
   and provides packaged and bridged processors.
-- [src/project_io.rs](src/project_io.rs) — Coordinates project loading, saving and linked assets.
+- [src/project_io.rs](src/project_io.rs) — Coordinates the project lifecycle, linked assets and
+  recently opened projects. [Session project I/O](../komponist-session/src/project_io.rs) handles
+  file loading and publication.
 
 ## How it works
 

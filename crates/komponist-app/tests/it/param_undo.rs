@@ -532,7 +532,7 @@ fn opened_sampler_app(kit: &Path, file: &Path) -> Option<(App, DeviceId, u32)> {
         .collect();
     let project = edits::set_device_asset_links(&project, drums, links).unwrap();
     std::fs::create_dir_all(dir).unwrap();
-    komponist_app::project_io::save_project(file, &project).unwrap();
+    komponist_session::project_io::save_project(file, &project).unwrap();
     std::fs::remove_file(&files[7]).unwrap();
 
     let mut app = app_with(Project::new("leer"), host);

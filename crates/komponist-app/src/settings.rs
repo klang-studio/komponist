@@ -454,7 +454,7 @@ impl Settings {
         let io = |e| SettingsError::Io(path.to_owned(), e);
         let text = serde_json::to_string_pretty(self)
             .map_err(|e| SettingsError::Parse(path.to_owned(), e))?;
-        crate::project_io::write_atomic(path, &text, true)
+        komponist_session::project_io::write_atomic(path, &text, true)
             .map(|not_durable| {
                 if let Some(error) = not_durable {
                     eprintln!(

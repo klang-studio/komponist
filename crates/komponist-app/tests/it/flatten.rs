@@ -8,7 +8,6 @@ use egui::accesskit::Role;
 use egui::{Event as UiEvent, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
-use komponist_app::project_io::{load_project, save_project};
 use komponist_app::ui_state::{FocusArea, StatusKind};
 use komponist_app::{Action, App, EditAction, ProjectAction};
 use komponist_engine::testing::{TestMidiFx, TestPanic};
@@ -31,6 +30,7 @@ use komponist_session::device_host::{
     AssetHost, DeviceHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost,
     ParameterHost, PluginCatalogHost, PluginWindowHost, PresetHost, ProcessorHost,
 };
+use komponist_session::project_io::{load_project, save_project};
 
 use crate::common::{
     SYNTH, app_with, clap_plugin, fixture_dirs, instrument_project, native_fixture,

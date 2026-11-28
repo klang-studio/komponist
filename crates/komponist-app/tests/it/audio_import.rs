@@ -206,7 +206,7 @@ fn opening_a_project_keeps_missing_audio_links_and_lists_the_clips() {
     import(&mut app, vec![source.clone()], None, 0);
     let expected = app.project().clone();
     let file = dir.join("Missing.komponist");
-    komponist_app::project_io::save_project(&file, app.project()).unwrap();
+    komponist_session::project_io::save_project(&file, app.project()).unwrap();
     std::fs::remove_file(source).unwrap();
     let mut opened = App::headless(project());
     opened.dispatch(Action::Project(ProjectAction::OpenPath(file)));
@@ -243,7 +243,7 @@ fn collect_reports_skipped_non_audio_sources_in_both_languages() {
         )
         .unwrap();
         let file = dir.join(format!("Skipped-{lang:?}.komponist"));
-        komponist_app::project_io::save_project(&file, &p).unwrap();
+        komponist_session::project_io::save_project(&file, &p).unwrap();
         let mut app = App::headless(project()).with_lang(lang);
         app.dispatch(Action::Project(ProjectAction::OpenPath(file.clone())));
         app.dispatch(Action::Project(ProjectAction::CollectAndSave));

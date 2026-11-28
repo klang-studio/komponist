@@ -10,7 +10,7 @@ publish.workspace = true
 workspace = true
 
 [features]
-# Synthetic engine notices and JACK capture metadata for the app's unit tests.
+# Engine and filesystem fault injection for the app's unit tests.
 test-support = []
 
 [dependencies]
@@ -22,6 +22,12 @@ komponist-plugin-api.workspace = true
 komponist-plugins.workspace = true
 komponist-processor.workspace = true
 tempfile.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 assert_no_alloc.workspace = true

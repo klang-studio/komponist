@@ -3249,7 +3249,9 @@ dependencies = [
  "komponist-plugin-api",
  "komponist-plugins",
  "komponist-processor",
+ "libc",
  "tempfile",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

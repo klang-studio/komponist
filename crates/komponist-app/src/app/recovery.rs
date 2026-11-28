@@ -27,6 +27,7 @@ use crate::app::App;
 use crate::dialogs::recovery::{Answer, Model, Variant};
 use crate::dialogs::start::RecentRow;
 use crate::dialogs::{Overlay, Pending, format};
+use crate::project_io::{file_io_reason, project_io_reason};
 use crate::recovery::{Clock, DocumentState, FileState, Id, PanicHandle, Recovery, Store};
 use crate::ui_state::{Screen, StatusKind};
 
@@ -113,8 +114,7 @@ impl App {
             path: self.project_path.as_deref(),
         });
         if let Some(error) = failure {
-            let reason =
-                crate::project_io::ProjectIoError::Io(PathBuf::new(), error).reason(self.lang);
+            let reason = file_io_reason(&error, self.lang);
             self.set_status(
                 self.lang.status_recovery_write_failed(reason),
                 StatusKind::Error,
@@ -131,8 +131,7 @@ impl App {
         let after = after.map(|path| Pending::OpenPath(std::path::absolute(&path).unwrap_or(path)));
         self.recovery.scan();
         if let Some(error) = self.recovery.take_scan_error() {
-            let reason =
-                crate::project_io::ProjectIoError::Io(PathBuf::new(), error).reason(self.lang);
+            let reason = file_io_reason(&error, self.lang);
             self.recovery_ui.scan_error = Some(self.lang.status_recovery_scan_failed(reason));
         }
         let mut ids: Vec<Id> = self
@@ -237,7 +236,7 @@ impl App {
         let untitled = state == FileState::Never;
         let variant = match (&candidate.loaded, state) {
             (Err(error), _) => Variant::Unreadable {
-                reason: error.reason(t),
+                reason: project_io_reason(error, t),
                 untitled,
             },
             (Ok(_), FileState::Never) => Variant::Untitled,
@@ -441,7 +440,7 @@ impl App {
                     project.tracks.iter().map(|track| track.hue.0).collect(),
                     false,
                 ),
-                Err(error) => (error.reason(t), Vec::new(), true),
+                Err(error) => (project_io_reason(error, t), Vec::new(), true),
             };
             own.push(RecentRow {
                 path: candidate
