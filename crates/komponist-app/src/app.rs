@@ -877,8 +877,6 @@ impl App {
             }
             return;
         };
-        // The take is an undo step of its own, also in the middle of a drag.
-        self.session.document_mut().end_gesture();
         let label = commit.label().to_owned();
         let Some(applied) = self.commit_recorded_take(
             &label,

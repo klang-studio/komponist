@@ -262,6 +262,7 @@ fn recording_preview(
 /// Session-owned files survive undo. Only an explicit discard deletes an active session.
 #[derive(Default)]
 pub struct AudioCapture {
+    generation: Arc<()>,
     capture: Option<Capture>,
     provisional: BTreeSet<PathBuf>,
     pending_midi: Option<Commit>,
@@ -342,6 +343,7 @@ impl AudioCapture {
     /// one still draining its tail: its copies are deleted (by the worker, or here if they are
     /// already made), the finished WAVs stay.
     pub fn cancel(&mut self) {
+        self.generation = Arc::new(());
         if let Some(mut capture) = self.capture.take() {
             if let Some(staging) = capture.staging.take() {
                 self.cleanup
@@ -441,6 +443,7 @@ pub fn commit_take(
     names: &dyn TakeNames,
     directory: Option<&Path>,
 ) -> Result<AppliedTakes, EditError> {
+    document.end_gesture();
     document.apply_with(label, |project| {
         let mut project = match automation {
             Some(pass) => pass.apply(project)?,
@@ -488,6 +491,7 @@ impl AudioCapture {
         let directory = config.directory.clone();
         let rate = config.sample_rate;
         let (recorder, session) = writer::prepare(config)?;
+        self.generation = Arc::new(());
         self.capture = Some(Capture {
             session,
             directory,
@@ -782,10 +786,20 @@ impl AudioCapture {
 
     /// Copies owned WAVs and takes an independent checkpoint while the writer stays in place.
     /// Only a successful project write may adopt these paths and relocate the live writer.
+    /// Advance the capture and retry if this returns `RecordingError::WriterStopped`.
     pub fn stage_for_save(
         &mut self,
         project_dir: &Path,
     ) -> Result<StagedRecordings, RecordingError> {
+        if self.needs_finalization() {
+            return Err(RecordingError::WriterStopped);
+        }
+        let takes = self
+            .capture
+            .as_ref()
+            .map(|capture| capture.session.checkpoint())
+            .transpose()?
+            .unwrap_or_default();
         let target = project_dir.join("Takes");
         // Private copies of an app that ended during a background copy.
         files::reclaim_abandoned(&target);
@@ -796,6 +810,7 @@ impl AudioCapture {
             .take()
             .filter(|failed| failed.target == target);
         let mut staged = StagedRecordings {
+            generation: Arc::clone(&self.generation),
             target,
             mapping: BTreeMap::new(),
             copied_files: BTreeMap::new(),
@@ -805,19 +820,16 @@ impl AudioCapture {
             checkpoints: Vec::new(),
             warnings: SaveWarnings::default(),
         };
-        if let Some(capture) = &self.capture {
-            let takes = capture.session.checkpoint()?;
-            if !takes.is_empty() {
-                staged.checkpoints = files::checkpoint(&takes, &staged.target)
-                    .map_err(|error| RecordingError::Io(error.to_string()))?;
-                staged.live.extend(takes.into_iter().map(|take| take.path));
-                staged.live_files.extend(
-                    staged
-                        .live
-                        .iter()
-                        .filter_map(|path| std::fs::canonicalize(path).ok()),
-                );
-            }
+        if !takes.is_empty() {
+            staged.checkpoints = files::checkpoint(&takes, &staged.target)
+                .map_err(|error| RecordingError::Io(error.to_string()))?;
+            staged.live.extend(takes.into_iter().map(|take| take.path));
+            staged.live_files.extend(
+                staged
+                    .live
+                    .iter()
+                    .filter_map(|path| std::fs::canonicalize(path).ok()),
+            );
         }
         let paths: Vec<_> = self
             .provisional
@@ -844,11 +856,15 @@ impl AudioCapture {
     }
 
     /// Publishes the staged paths after the new project file is written. Older on-disk
-    /// checkpoints and live writer paths remain usable until then.
+    /// checkpoints and live writer paths remain usable until then. If the capture was replaced,
+    /// the published copies are kept and the new capture is left untouched.
     pub fn saved(&mut self, mut staged: StagedRecordings) -> SaveWarnings {
         staged.checkpoints.clear();
         let mapping = std::mem::take(&mut staged.mapping);
         let mut warnings = std::mem::take(&mut staged.warnings);
+        if !Arc::ptr_eq(&self.generation, &staged.generation) {
+            return warnings;
+        }
         for source in mapping.into_keys() {
             self.provisional.remove(&source);
             self.pending_removals.insert(source);
@@ -898,6 +914,7 @@ impl AudioCapture {
 /// Assets created by this save attempt. A failed write leaves the live capture, document and
 /// original recordings in place, and drops only the unreferenced copies made by this attempt.
 pub struct StagedRecordings {
+    generation: Arc<()>,
     target: PathBuf,
     mapping: BTreeMap<PathBuf, PathBuf>,
     copied_files: BTreeMap<PathBuf, PathBuf>,
@@ -1120,6 +1137,55 @@ mod tests {
     }
 
     #[test]
+    fn published_save_from_an_old_capture_keeps_its_copies_and_leaves_the_new_writer_alone() {
+        use komponist_engine::recording::RecordingTrack;
+        use komponist_model::{AudioInput, HardwareInput};
+
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("Old project");
+        std::fs::create_dir(&project).unwrap();
+        let original = root.path().join("old.wav");
+        std::fs::write(&original, b"old take").unwrap();
+        let mut capture = AudioCapture::default();
+        capture.track_provisional(original.clone());
+        let staged = capture.stage_for_save(&project).unwrap();
+        let published = staged.destination(original.clone());
+        assert_ne!(published, original);
+
+        capture.reset();
+        let directory = root.path().join("New capture");
+        let recorder = capture
+            .prepare(
+                RecordingConfig {
+                    directory: directory.clone(),
+                    sample_rate: 48_000,
+                    format: writer::RecordingFormat::Pcm24,
+                    tracks: vec![RecordingTrack {
+                        track: TrackId(1),
+                        name: "New track".into(),
+                        channels: 1,
+                        input: AudioInput::Hardware(HardwareInput {
+                            first: 0,
+                            stereo: false,
+                        }),
+                    }],
+                },
+                Tick::ZERO,
+                true,
+                1,
+            )
+            .unwrap();
+
+        capture.saved(staged);
+        assert_eq!(capture.folder(), Some(directory.as_path()));
+        assert_eq!(std::fs::read_dir(directory).unwrap().count(), 1);
+        assert_eq!(std::fs::read(&published).unwrap(), b"old take");
+        assert!(original.is_file());
+        drop(recorder);
+        capture.cancel();
+    }
+
+    #[test]
     fn a_combined_take_inserts_midi_audio_and_automation_in_one_undo_step() {
         let (project, midi_track) = edits::add_track(
             &Project::new("Capture"),
@@ -1142,6 +1208,13 @@ mod tests {
             edits::automation::set_lane_mode(&project, owner, lane, AutomationMode::Latch).unwrap();
         let mut document = Document::new(project);
         let before = document.project().clone();
+        document.begin_gesture("Rename");
+        document
+            .apply("Rename", |project| {
+                edits::set_project_prop(project, edits::ProjectProp::Name("Renamed".into()))
+            })
+            .unwrap();
+        let after_gesture = document.project().clone();
 
         let mut midi = super::super::midi::Recording::new(&before, Tick::ZERO, Names);
         midi.handle(
@@ -1193,8 +1266,11 @@ mod tests {
             Some(0.75)
         );
         assert!(document.undo());
+        assert_eq!(document.project(), &after_gesture);
+        assert!(document.undo());
         assert_eq!(document.project(), &before);
         assert!(!document.undo());
+        assert!(document.redo());
         assert!(document.redo());
         assert_eq!(
             document.project().track(midi_track).unwrap().clips[0].id,

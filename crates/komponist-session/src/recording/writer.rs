@@ -84,6 +84,8 @@ pub enum RecordingError {
     SourceChanged,
     /// The user discarded the session; its provisional files are deleted.
     Cancelled,
+    /// The capture has reached finalization. Poll for the completed take.
+    WriterStopped,
     /// Creating, writing or finalizing a file failed.
     Io(String),
 }
@@ -96,6 +98,7 @@ impl std::fmt::Display for RecordingError {
             Self::SampleRateChanged => f.write_str("audio sample rate changed while recording"),
             Self::SourceChanged => f.write_str("recording track or input changed"),
             Self::Cancelled => f.write_str("recording discarded"),
+            Self::WriterStopped => f.write_str("recording writer stopped"),
             Self::Io(e) => f.write_str(e),
         }
     }
@@ -307,13 +310,35 @@ impl Progress {
 }
 /// UI endpoint. Drop/cancel/join and waveform locks are confined to the non-RT owner.
 pub struct RecordingSession {
-    control: mpsc::Sender<Control>,
+    control: Arc<Mutex<Option<mpsc::Sender<Control>>>>,
     signals: CaptureSignals,
     progress: Arc<Vec<Arc<Progress>>>,
-    rx: mpsc::Receiver<Result<RecordingResult, RecordingError>>,
+    rx: mpsc::Receiver<WriterOutcome>,
     worker: Option<JoinHandle<()>>,
     finished: bool,
 }
+// Keep finalized files owned by the worker until the control thread consumes the result.
+struct WriterOutcome {
+    result: Option<Result<RecordingResult, RecordingError>>,
+    paths: Vec<PathBuf>,
+}
+
+impl WriterOutcome {
+    fn accept(mut self) -> Result<RecordingResult, RecordingError> {
+        self.result.take().expect("writer result is consumed once")
+    }
+}
+
+impl Drop for WriterOutcome {
+    fn drop(&mut self) {
+        if self.result.is_some() {
+            for path in &self.paths {
+                let _ = std::fs::remove_file(path);
+            }
+        }
+    }
+}
+
 type Checkpoint = Result<Vec<RecordedTake>, RecordingError>;
 enum Control {
     Checkpoint(mpsc::SyncSender<Checkpoint>),
@@ -325,23 +350,35 @@ impl RecordingSession {
     /// Capture continues into bounded queues while the worker handles this request.
     pub fn checkpoint(&self) -> Checkpoint {
         let (tx, rx) = mpsc::sync_channel(1);
-        self.control
-            .send(Control::Checkpoint(tx))
-            .map_err(|_| RecordingError::Io("recording writer already stopped".into()))?;
+        self.request(Control::Checkpoint(tx))?;
         rx.recv_timeout(Duration::from_secs(2))
-            .map_err(|_| RecordingError::Io("recording checkpoint timed out".into()))?
+            .map_err(|error| match error {
+                mpsc::RecvTimeoutError::Disconnected => RecordingError::WriterStopped,
+                mpsc::RecvTimeoutError::Timeout => {
+                    RecordingError::Io("recording checkpoint timed out".into())
+                }
+            })?
     }
     /// Non-RT. Closes file handles, transactionally stages hard links on the same filesystem, and reopens
     /// append. A failed move restores old paths and capture continues; cross-device moves are an
     /// explicit error and can be copied after stopping. No files are silently overwritten.
     pub fn relocate(&self, directory: &std::path::Path) -> Checkpoint {
         let (tx, rx) = mpsc::sync_channel(1);
-        self.control
-            .send(Control::Relocate(directory.to_path_buf(), tx))
-            .map_err(|_| RecordingError::Io("recording writer already stopped".into()))?;
-        rx.recv()
-            .map_err(|_| RecordingError::Io("recording writer disconnected".into()))?
+        self.request(Control::Relocate(directory.to_path_buf(), tx))?;
+        rx.recv().map_err(|_| RecordingError::WriterStopped)?
     }
+    fn request(&self, request: Control) -> Result<(), RecordingError> {
+        let control = self
+            .control
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        control
+            .as_ref()
+            .ok_or(RecordingError::WriterStopped)?
+            .send(request)
+            .map_err(|_| RecordingError::WriterStopped)
+    }
+
     /// Receives only a completely drained/finalized result. Never blocks awaiting capture.
     pub fn poll(&mut self) -> Option<Result<RecordingResult, RecordingError>> {
         let received = match self.rx.try_recv() {
@@ -367,10 +404,11 @@ impl RecordingSession {
     /// `Err(())`: the writer hung up without a result.
     fn received(
         &mut self,
-        received: Result<Result<RecordingResult, RecordingError>, ()>,
+        received: Result<WriterOutcome, ()>,
     ) -> Option<Result<RecordingResult, RecordingError>> {
         let result = match received {
-            Ok(result) => result,
+            Ok(_) if self.signals.cancelled() => Err(RecordingError::Cancelled),
+            Ok(outcome) => outcome.accept(),
             Err(()) if self.finished => return None,
             Err(()) => Err(RecordingError::Io(
                 "recording writer terminated unexpectedly".into(),
@@ -384,7 +422,7 @@ impl RecordingSession {
         }
         Some(result)
     }
-    /// Requests discard; the engine observes cancellation before sending more chunks.
+    /// Stops capture and discards WAVs whose result has not been accepted.
     pub fn cancel(&self) {
         self.signals.cancel();
     }
@@ -441,7 +479,13 @@ fn create(path: PathBuf, config: &RecordingConfig, channels: u16) -> io::Result<
             hound::SampleFormat::Float
         },
     };
-    let writer = hound::WavWriter::new(BufWriter::new(file), spec).map_err(io::Error::other)?;
+    let writer = match hound::WavWriter::new(BufWriter::new(file), spec) {
+        Ok(writer) => writer,
+        Err(error) => {
+            let _ = std::fs::remove_file(&path);
+            return Err(io::Error::other(error));
+        }
+    };
     Ok(Output {
         writer: Some(writer),
         path,
@@ -761,8 +805,9 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
             Ok(o) => o,
             Err(e) => {
                 for o in outputs {
-                    let o: Output = o;
-                    let _ = std::fs::remove_file(o.path);
+                    let Output { writer, path, .. } = o;
+                    drop(writer);
+                    let _ = std::fs::remove_file(path);
                 }
                 return Err(e);
             }
@@ -779,9 +824,12 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
             wave: Mutex::new(ProgressWave::new(spec.channels)),
         }));
     }
+    let initial_paths: Vec<_> = outputs.iter().map(|output| output.path.clone()).collect();
     let progress = Arc::new(progress);
     let (result_tx, rx) = mpsc::sync_channel(1);
     let (control, control_rx) = mpsc::channel();
+    let control = Arc::new(Mutex::new(Some(control)));
+    let writer_control = Arc::clone(&control);
     let writer_signals = signals.clone();
     let writer_progress = Arc::clone(&progress);
     let trace = std::env::var_os("KOMPONIST_JACK_CAPTURE_TRACE").as_deref()
@@ -802,7 +850,7 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
             loop {
                 // Collect requests before draining: a checkpoint must include samples queued
                 // before the request, even if they arrived just after the previous drain.
-                let controls: Vec<_> = control_rx.try_iter().collect();
+                let mut controls: Vec<_> = control_rx.try_iter().collect();
                 let ended = signals.ended();
                 let mut worked = false;
                 for (i, reader) in readers.iter_mut().enumerate() {
@@ -846,13 +894,12 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                             continue;
                         }
                         // The preceding pass has ended. Close it now to bound open FDs.
-                        for (_, old) in all[i].range_mut(..chunk.lap) {
-                            if !old.closed
-                                && let Err(e) = close_output(old, config.format)
-                            {
-                                failure = Some(e);
-                                signals.finish();
-                            }
+                        if let Some((_, old)) = all[i].range_mut(..chunk.lap).next_back()
+                            && !old.closed
+                            && let Err(error) = close_output(old, config.format)
+                        {
+                            failure = Some(error);
+                            signals.finish();
                         }
                         if failure.is_some() {
                             continue;
@@ -960,6 +1007,13 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                         signals.finish();
                     }
                 }
+                let drained = ended && !worked;
+                if drained {
+                    // Close requests under the same lock used by senders, then serve any requests
+                    // accepted during the final drain before finishing the WAVs.
+                    writer_control.lock().unwrap_or_else(|error| error.into_inner()).take();
+                    controls.extend(control_rx.try_iter());
+                }
                 for control in controls {
                     match control {
                         Control::Checkpoint(reply) => {
@@ -1009,7 +1063,7 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                         }
                     }
                 }
-                if ended && !worked {
+                if drained {
                     break;
                 }
                 if !ended {
@@ -1017,6 +1071,7 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                 }
             }
             let mut takes = Vec::new();
+            let mut paths = Vec::new();
             for (i, passes) in all.into_iter().enumerate() {
                 for (lap, mut output) in passes {
                     if output.frames > 0
@@ -1042,9 +1097,10 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                     {
                         failure = Some(RecordingError::Io(e.to_string()));
                     }
-                    if frames == 0 || signals.cancelled() {
+                    if frames == 0 {
                         let _ = std::fs::remove_file(&path);
                     } else {
+                        paths.push(path.clone());
                         takes.push(RecordedTake {
                             track: config.tracks[i].track,
                             path,
@@ -1078,8 +1134,27 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
             } else {
                 Ok(RecordingResult { takes })
             };
-            let _ = result_tx.send(result);
-        })?;
+            let outcome = WriterOutcome { result: Some(result), paths };
+            if signals.cancelled() {
+                drop(outcome);
+                let _ = result_tx.send(WriterOutcome {
+                    result: Some(Err(RecordingError::Cancelled)),
+                    paths: Vec::new(),
+                });
+            } else {
+                let _ = result_tx.send(outcome);
+            }
+        });
+    let worker = match worker {
+        Ok(worker) => worker,
+        Err(error) => {
+            // A failed spawn drops the closure and closes its output handles before returning.
+            for path in initial_paths {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(error);
+        }
+    };
     Ok((
         recorder,
         RecordingSession {
@@ -1499,7 +1574,7 @@ mod tests {
                 recorder.capture_for_test(TrackId(1), &[0.25; PERIOD], &[0.0; PERIOD], window);
             }
             let (tx, rx) = mpsc::sync_channel(1);
-            session.control.send(Control::Checkpoint(tx)).unwrap();
+            session.request(Control::Checkpoint(tx)).unwrap();
             drop(stalled);
             assert_eq!(
                 rx.recv_timeout(Duration::from_secs(2))
@@ -1577,13 +1652,54 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_after_writer_shutdown_reports_the_final_take_is_available() {
+        let (_directory, mut recorder, mut session) = stalled_writer_fixture(1);
+        recorder.finish_for_test();
+        session.worker.take().unwrap().join().unwrap();
+        assert_eq!(
+            session.checkpoint().unwrap_err(),
+            RecordingError::WriterStopped
+        );
+        assert!(session.poll().unwrap().unwrap().takes.is_empty());
+    }
+
+    #[test]
+    fn a_queued_two_track_result_is_cleaned_up_only_if_it_is_discarded() {
+        let map = TempoMap::constant(Tempo::DEFAULT, Meter::FOUR_FOUR);
+        for discard in [false, true] {
+            let (directory, mut recorder, mut session) = stalled_writer_fixture(2);
+            for track in [TrackId(1), TrackId(2)] {
+                recorder.capture_for_test(
+                    track,
+                    &[0.25; PERIOD],
+                    &[0.5; PERIOD],
+                    CaptureWindow {
+                        at: 0,
+                        lap: 0,
+                        lp: None,
+                        loop_range: TickRange::default(),
+                        map,
+                    },
+                );
+            }
+            recorder.finish_for_test();
+            session.worker.take().unwrap().join().unwrap();
+            assert_eq!(std::fs::read_dir(&directory.0).unwrap().count(), 2);
+            if !discard {
+                assert_eq!(session.poll().unwrap().unwrap().takes.len(), 2);
+            }
+            drop(session);
+            assert_eq!(
+                std::fs::read_dir(&directory.0).unwrap().count(),
+                if discard { 0 } else { 2 },
+            );
+        }
+    }
+
+    #[test]
     fn a_late_destination_append_failure_restores_original_paths_and_all_writers() {
-        let root = std::env::temp_dir().join(format!(
-            "komponist-reopen-{}-{}",
-            std::process::id(),
-            SESSION.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let scratch = Scratch::new();
+        let root = scratch.0.clone();
         let config = RecordingConfig {
             directory: root.clone(),
             sample_rate: 48000,
@@ -1646,6 +1762,5 @@ mod tests {
                 "capture continues through the restored writer"
             );
         }
-        std::fs::remove_dir_all(root).unwrap();
     }
 }

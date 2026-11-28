@@ -13,7 +13,9 @@ use komponist_session::recording::audio::{
 };
 use komponist_session::recording::automation::AutomationCapture;
 use komponist_session::recording::midi::Commit;
-use komponist_session::recording::writer::{RecordedTake, RecordingConfig, RecordingFormat};
+use komponist_session::recording::writer::{
+    RecordedTake, RecordingConfig, RecordingError, RecordingFormat,
+};
 
 use super::MidiTakeNames;
 use crate::actions::{Action, UiAction};
@@ -202,7 +204,6 @@ impl App {
                     },
                     |commit| commit.label().to_owned(),
                 );
-                self.session.document_mut().end_gesture();
                 let applied = self.commit_recorded_take(
                     &label,
                     take.automation.as_ref(),
@@ -271,6 +272,10 @@ impl App {
         if !self.recording.audio.needs_finalization() {
             return true;
         }
+        self.await_finalizing_audio_take()
+    }
+
+    fn await_finalizing_audio_take(&mut self) -> bool {
         let deadline = Instant::now() + TAKE_FINISH_TIMEOUT;
         while self.recording.audio.is_active() && Instant::now() < deadline {
             self.advance_audio_take(Some(deadline));
@@ -287,12 +292,16 @@ impl App {
         &mut self,
         project_dir: &Path,
     ) -> Result<StagedRecordings, ()> {
-        self.recording
-            .audio
-            .stage_for_save(project_dir)
-            .map_err(|error| {
-                self.set_status(self.lang.audio_record_failed(error), StatusKind::Error);
-            })
+        let mut staged = self.recording.audio.stage_for_save(project_dir);
+        if matches!(staged, Err(RecordingError::WriterStopped)) {
+            if !self.await_finalizing_audio_take() {
+                return Err(());
+            }
+            staged = self.recording.audio.stage_for_save(project_dir);
+        }
+        staged.map_err(|error| {
+            self.set_status(self.lang.audio_record_failed(error), StatusKind::Error);
+        })
     }
 
     pub(crate) fn recordings_saved(&mut self, staged: StagedRecordings) {
@@ -1281,6 +1290,10 @@ mod tests {
         wait(&mut app, |app| {
             app.recording.audio.staging_paths_for_test().is_some()
         });
+        assert!(matches!(
+            app.recording.audio.stage_for_save(&root),
+            Err(RecordingError::WriterStopped)
+        ));
         let source = app
             .recording
             .audio
