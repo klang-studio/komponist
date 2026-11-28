@@ -16,8 +16,8 @@
 //! | Pad | see `VOLUMES_DB` | volt („Wide Pad“), EQ („Low Cut 80 Hz“); post-fader send to Reverb |
 //! | Keys | −8 dB | hexa („E-Piano“), Delay („Soft Tape“) |
 //! | Arp | −10 dB | Tonleiter („A Minor Pentatonic“), Arpeggiator („Sixteenths Up/Down“), hexa („Synth Pluck“), Delay („Eighth Ping-Pong“) |
-//! | Glass Pluck | −24 dB | Sampler, tempo-synced melody with filter modulation |
-//! | Glass Slices | −24 dB | Sampler, MIDI-triggered slices of the same recording |
+//! | Glass Pluck | −24 dB | Sampler, tempo-synced melody, the cutoff on a Smooth Random LFO |
+//! | Glass Slices | −24 dB | Sampler, MIDI-triggered slices of the same recording, the same LFO |
 //! | Vowel Pad | −10 dB | surf („Vowel Pad“): a voice over the Pad from bar 9, LFOs on both table positions, automation of Position A (through the whole table) and Position B |
 //! | Hall | 0 dB | effect bus: Hall („Large Hall“), fed by the sends of Lead and Pad |
 //! | Master | 0 dB | Limiter (ceiling −0.3 dB) |
