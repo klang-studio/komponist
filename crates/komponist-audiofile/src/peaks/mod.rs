@@ -326,9 +326,15 @@ impl PeakBuilder {
         }
     }
 
-    /// Adds planar frames (one slice per channel, equal lengths).
+    /// Adds planar frames (one slice per channel, equal lengths; frames past the end of the
+    /// shortest channel are left out).
     pub fn push_planar<V: AsRef<[f32]>>(&mut self, planar: &[V]) {
-        let frames = planar.first().map_or(0, |c| c.as_ref().len());
+        let frames = planar
+            .iter()
+            .take(self.channels)
+            .map(|c| c.as_ref().len())
+            .min()
+            .unwrap_or(0);
         for i in 0..frames {
             for (cur, plane) in self.current.iter_mut().zip(planar) {
                 let v = plane.as_ref()[i];

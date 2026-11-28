@@ -21,6 +21,8 @@
 mod decode;
 mod error;
 pub mod fixtures;
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod peaks;
 mod pool;
 mod resample;

@@ -135,6 +135,11 @@ impl StreamResampler {
             return Err(AudioError::Resample("channel count".into()));
         }
         let frames = input[0].as_ref().len();
+        // Unequal channels would leave the pending planes out of step (a slice past the end of
+        // the shorter one in `run`).
+        if input.iter().any(|channel| channel.as_ref().len() != frames) {
+            return Err(AudioError::Resample("channels of unequal length".into()));
+        }
         self.frames_in += frames as u64;
         if self.inner.is_none() {
             for (o, i) in out.iter_mut().zip(input) {
@@ -161,9 +166,16 @@ impl StreamResampler {
             if !self.pending[0].is_empty() {
                 self.run(Some(self.pending[0].len()), out)?;
             }
-            // Pure silence pushes the filter's tail out.
+            // Pure silence pushes the filter's tail out. A rate pair with a small common divisor
+            // (say 96001 Hz to 48 kHz) has an FFT block far larger than a converter chunk: nothing
+            // comes out before a whole block has gone in, so the bound grows with the block.
+            let limit = 64
+                + 2 * self
+                    .inner
+                    .as_ref()
+                    .map_or(0, |i| i.fft_size_in().div_ceil(CHUNK));
             let mut guard = 0;
-            while self.frames_out < expected && guard < 64 {
+            while self.frames_out < expected && guard < limit {
                 self.run(Some(0), out)?;
                 guard += 1;
             }

@@ -424,3 +424,83 @@ fn old_peak_caches_and_invalid_rms_energy_are_misses() {
         assert_eq!(cache::from_bytes(&corrupt, &id(11, 22)), None);
     }
 }
+
+/// #230: a record must name a rate the decoders accept, finite ranges with min ≤ max, and as many
+/// levels as the frame count gives. Damaged in any of these, it is a miss.
+#[test]
+fn records_with_impossible_values_are_misses() {
+    let p = PeakData::from_planar(48000, &[noise(1000, 5)]);
+    let bytes = cache::to_bytes(&p, &id(11, 22));
+    assert_eq!(cache::from_bytes(&bytes, &id(11, 22)), Some(p.clone()));
+    for rate in [0u32, 768_001, u32::MAX] {
+        let mut corrupt = bytes.clone();
+        corrupt[4..8].copy_from_slice(&rate.to_le_bytes());
+        assert_eq!(cache::from_bytes(&corrupt, &id(11, 22)), None, "{rate} Hz");
+    }
+    // The first bucket's min and max: after the 48-byte header and the 16-byte level header.
+    for (min, max) in [
+        (f32::NAN, 0.5),
+        (-0.5, f32::INFINITY),
+        (f32::NEG_INFINITY, f32::INFINITY),
+        (0.5, -0.5),
+    ] {
+        let mut corrupt = bytes.clone();
+        corrupt[64..68].copy_from_slice(&min.to_le_bytes());
+        corrupt[68..72].copy_from_slice(&max.to_le_bytes());
+        assert_eq!(
+            cache::from_bytes(&corrupt, &id(11, 22)),
+            None,
+            "{min} ..= {max}"
+        );
+    }
+    // One level fewer than 1000 frames have (8 buckets, 2, 1): the record ends early.
+    let mut short = bytes.clone();
+    short[44..48].copy_from_slice(&2u32.to_le_bytes());
+    let level_bytes = |buckets: usize| 16 + buckets * 16;
+    short.truncate(48 + level_bytes(8) + level_bytes(2));
+    assert_eq!(cache::from_bytes(&short, &id(11, 22)), None);
+}
+
+/// #230: planar channels of unequal length used to index past the end of the shorter one.
+#[test]
+fn planar_channels_of_unequal_length_stop_at_the_shortest() {
+    let mut b = PeakBuilder::new(44100, 2);
+    b.push_planar(&[vec![0.5; 300], vec![-0.5; 200]]);
+    let p = b.finish();
+    assert_eq!(p.frames(), 200);
+    assert_eq!(p.channels(), 2);
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(128))]
+
+    /// Damaged records never panic and never yield impossible peaks (the `peak_cache` fuzz
+    /// target's harness).
+    #[test]
+    fn damaged_records_are_misses_or_valid(
+        channels in proptest::collection::vec(proptest::collection::vec(-1.0f32..=1.0, 1..1500), 1..=2),
+        flips in proptest::collection::vec((proptest::num::usize::ANY, proptest::num::u8::ANY), 0..6),
+        cut in proptest::option::of(proptest::num::usize::ANY),
+    ) {
+        let frames = channels.iter().map(Vec::len).min().unwrap();
+        let channels: Vec<Vec<f32>> = channels.into_iter().map(|c| c[..frames].to_vec()).collect();
+        let p = PeakData::from_planar(44100, &channels);
+        let mut bytes = cache::to_bytes(&p, &id(1234, 5678));
+        komponist_audiofile::fuzzing::peak_cache(&bytes);
+        for (at, value) in flips {
+            let len = bytes.len();
+            bytes[at % len] = value;
+        }
+        if let Some(cut) = cut {
+            bytes.truncate(cut % (bytes.len() + 1));
+        }
+        komponist_audiofile::fuzzing::peak_cache(&bytes);
+    }
+
+    /// Arbitrary bytes behind the magic.
+    #[test]
+    fn arbitrary_records_never_panic(body in proptest::collection::vec(proptest::num::u8::ANY, 0..512)) {
+        komponist_audiofile::fuzzing::peak_cache(&[&b"KPK3"[..], &body].concat());
+        komponist_audiofile::fuzzing::peak_cache(&[&b"KPK2"[..], &body].concat());
+    }
+}

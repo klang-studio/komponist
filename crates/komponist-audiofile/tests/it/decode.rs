@@ -488,3 +488,65 @@ fn aiff_c_float_samples_that_are_not_finite_decode_to_silence() {
     let d = decode_all(&path, None).unwrap();
     assert_eq!(d.channels[0], vec![0.5, 0.0, 0.0, -0.25]);
 }
+
+/// The files proptest mutates: the compressed fixtures, and small WAV and AIFF files written here.
+fn seed_files(dir: &Scratch) -> Vec<(Vec<u8>, &'static str)> {
+    let mut seeds: Vec<(Vec<u8>, &'static str)> = FIXTURES
+        .iter()
+        .map(|name| {
+            let ext = name.rsplit('.').next().unwrap();
+            (std::fs::read(fixture(name)).unwrap(), ext)
+        })
+        .collect();
+    let wav = dir.path("seed-i16.wav");
+    write_wav_i16(&wav, 44100, 2, &[1, -2, 300, -400, 5000, -6000]);
+    seeds.push((std::fs::read(&wav).unwrap(), "wav"));
+    let float = dir.path("seed-f32.wav");
+    write_wav_f32(&float, 48000, &[noise(300, 1)]);
+    seeds.push((std::fs::read(&float).unwrap(), "wav"));
+    seeds
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(48))]
+
+    /// Damaged files of every format decode to an error or to sane audio (the `audio_file` fuzz
+    /// target runs the same harness).
+    #[test]
+    fn damaged_files_give_errors_or_sane_audio(
+        seed in 0usize..5,
+        flips in proptest::collection::vec((proptest::num::usize::ANY, proptest::num::u8::ANY), 0..12),
+        cut in proptest::option::of(proptest::num::usize::ANY),
+        seek in 0u64..100_000,
+    ) {
+        let dir = Scratch::new(&format!("prop-{seed}-{}", flips.len()));
+        let (mut bytes, ext) = seed_files(&dir).swap_remove(seed);
+        for (at, value) in flips {
+            // Half of the flips in the header area, where lengths, rates and channels are.
+            let limit = if at % 2 == 0 { 256.min(bytes.len()) } else { bytes.len() };
+            bytes[(at / 2) % limit] = value;
+        }
+        if let Some(cut) = cut {
+            bytes.truncate(cut % (bytes.len() + 1));
+        }
+        komponist_audiofile::fuzzing::audio_bytes(&dir.0, &bytes, ext, seek);
+    }
+
+    /// Arbitrary bytes behind each format's magic.
+    #[test]
+    fn arbitrary_bytes_behind_a_magic_never_panic(
+        magic in 0usize..5,
+        body in proptest::collection::vec(proptest::num::u8::ANY, 0..2048),
+    ) {
+        let (head, ext): (&[u8], &str) = [
+            (&b"RIFF\x00\x10\x00\x00WAVEfmt "[..], "wav"),
+            (&b"FORM\x00\x00\x10\x00AIFFCOMM"[..], "aiff"),
+            (&b"fLaC"[..], "flac"),
+            (&b"OggS"[..], "ogg"),
+            (&b"ID3\x04\x00\x00"[..], "mp3"),
+        ][magic];
+        let dir = Scratch::new(&format!("prop-magic-{magic}-{}", body.len()));
+        let bytes = [head, &body].concat();
+        komponist_audiofile::fuzzing::audio_bytes(&dir.0, &bytes, ext, body.len() as u64);
+    }
+}

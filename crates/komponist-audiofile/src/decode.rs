@@ -632,6 +632,10 @@ impl Sym {
             };
             buf.copy_to_vecs_planar::<f32>(&mut self.planar);
             let frames = buf.frames();
+            if self.planar.is_empty() {
+                // No channels: nothing to place.
+                continue;
+            }
             // Where this buffer's frames are in the file: they end where the packet ends. A
             // decoder that holds output back (Vorbis' first packet after a reset gives nothing,
             // its successor gives two windows' worth) is placed right by this, which a count of
@@ -651,13 +655,35 @@ impl Sym {
             }
             self.pending.clear();
             self.pending_pos = 0;
-            for i in first..frames {
-                for plane in self.planar.iter().take(self.channels) {
-                    let v = plane[i];
-                    self.pending.push(if v.is_finite() { v } else { 0.0 });
-                }
-            }
+            interleave(
+                &self.planar,
+                first..frames,
+                self.channels,
+                &mut self.pending,
+            );
             return Ok(true);
+        }
+    }
+}
+
+/// Appends the frames `range` of the decoded packet `planar` to `out`, interleaved as `channels`
+/// channels, non-finite samples as silence. The channel count of a packet can differ from the
+/// one the stream was opened with (an MP3 stream may switch between mono and stereo frames, a
+/// damaged header may claim anything): missing channels repeat the packet's last one, extra
+/// ones are dropped, so `out` always holds whole frames. Nothing for a packet without channels.
+fn interleave(
+    planar: &[Vec<f32>],
+    range: std::ops::Range<usize>,
+    channels: usize,
+    out: &mut Vec<f32>,
+) {
+    let Some(last) = planar.len().checked_sub(1) else {
+        return;
+    };
+    for i in range {
+        for c in 0..channels {
+            let v = planar[c.min(last)].get(i).copied().unwrap_or(0.0);
+            out.push(if v.is_finite() { v } else { 0.0 });
         }
     }
 }
@@ -773,6 +799,34 @@ pub fn decode_all(path: &Path, max_seconds: Option<f64>) -> Result<Decoded, Audi
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #230: a packet whose channel count differs from the stream's must still give whole frames
+    /// (it used to give fewer samples per frame, shifting every channel after it).
+    #[test]
+    fn packets_with_another_channel_count_give_whole_frames() {
+        let mut out = Vec::new();
+        interleave(&[vec![1.0, 2.0, 3.0]], 1..3, 2, &mut out);
+        assert_eq!(out, [2.0, 2.0, 3.0, 3.0], "mono packet in a stereo stream");
+        out.clear();
+        let surround = [vec![1.0, 2.0], vec![-1.0, -2.0], vec![9.0, 9.0]];
+        interleave(&surround, 0..2, 2, &mut out);
+        assert_eq!(out, [1.0, -1.0, 2.0, -2.0], "extra channels are dropped");
+        out.clear();
+        interleave(&surround, 0..2, 1, &mut out);
+        assert_eq!(out, [1.0, 2.0]);
+        out.clear();
+        // A plane shorter than the packet claims, non-finite samples, no channels at all.
+        interleave(
+            &[vec![f32::NAN], vec![0.5, f32::INFINITY]],
+            0..2,
+            2,
+            &mut out,
+        );
+        assert_eq!(out, [0.0, 0.5, 0.0, 0.0]);
+        out.clear();
+        interleave(&[], 0..4, 2, &mut out);
+        assert!(out.is_empty());
+    }
 
     #[test]
     fn hostile_timestamps_do_not_overflow() {

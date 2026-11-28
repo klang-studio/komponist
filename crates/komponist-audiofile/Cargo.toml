@@ -16,3 +16,7 @@ symphonia.workspace = true
 rubato.workspace = true
 # Original-tempo analysis computes spectral flux off the audio thread.
 realfft.workspace = true
+
+[dev-dependencies]
+# Hostile-input properties of the decoders, the peak cache and the resampler (#230).
+proptest.workspace = true
