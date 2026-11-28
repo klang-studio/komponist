@@ -307,9 +307,12 @@ impl Editor {
         let hit_rect = editable.expand(m::POINT_HIT);
         let indices = visible_range(lane, hit_rect);
         let dense = indices.len() as f32 * m::POINT_DENSITY > editable.width();
-        let written_ranges = ctx
-            .automation_capture
-            .map_or_else(Vec::new, |capture| capture.preview_ranges(&lane.source));
+        let written_ranges =
+            ctx.automation_capture
+                .map_or_else(Vec::new, |capture| match &lane.source {
+                    Source::Lane(owner, id) => capture.preview_lane_ranges(*owner, *id),
+                    Source::Clip(clip, target) => capture.preview_clip_ranges(*clip, target),
+                });
         let preview = ctx
             .automation_capture
             .filter(|_| !written_ranges.is_empty())

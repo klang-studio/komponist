@@ -22,11 +22,11 @@ use komponist_model::{
 
 use crate::actions::{Action, UiAction};
 use crate::app::App;
-use crate::record;
 use crate::settings::CaptureFormat;
 use crate::ui_state::StatusKind;
+use komponist_session::recording::midi::Commit;
 
-use super::automation_capture::AutomationCapture;
+use komponist_session::recording::automation::AutomationCapture;
 
 /// How long Save (and opening the export) waits for a stopped take to drain and be copied.
 pub(super) const TAKE_FINISH_TIMEOUT: Duration = Duration::from_secs(2);
@@ -268,7 +268,7 @@ pub(super) struct State {
     capture: Option<Capture>,
     provisional: BTreeSet<PathBuf>,
     root_override: Option<PathBuf>,
-    pending_midi: Option<record::Commit>,
+    pending_midi: Option<Commit>,
     pending_automation: Option<AutomationCapture>,
     pending_removals: BTreeSet<PathBuf>,
     /// The ends of staging workers whose take was dropped; shutdown waits for their clean-up.
@@ -292,7 +292,7 @@ impl State {
         }) || self.pending_midi.is_some()
             || self.pending_automation.is_some()
     }
-    pub(super) fn defer_midi(&mut self, commit: Option<record::Commit>) {
+    pub(super) fn defer_midi(&mut self, commit: Option<Commit>) {
         if commit.is_some() {
             self.pending_midi = commit;
         }
@@ -859,7 +859,7 @@ impl App {
             }
             if let Some(notice) = applied.unlinked_notice(self.lang) {
                 self.set_status(notice, StatusKind::Info);
-            } else if midi.as_ref().is_some_and(record::Commit::incomplete) {
+            } else if midi.as_ref().is_some_and(Commit::incomplete) {
                 self.set_status(self.lang.record_notes_lost(), StatusKind::Error);
             } else if applied.linked > 0 {
                 self.set_status(

@@ -958,7 +958,7 @@ Useful flags: `--demo`, `--null-audio`, `--lang de|en`, `--scale F`, `--open-plu
 | `dialogs/`, `windows/`, `panels/` | settings, export, file dialogs; plugin frame windows; transport bar, status bar, dock tabs |
 | `shell.rs`, `layout.rs` | the main window layout |
 | `project_io.rs`, `settings.rs`, `dirs.rs` | project lifecycle and recent projects, settings, platform folders |
-| `record.rs`, `recording/` | MIDI capture and coordination of MIDI, audio and automation takes |
+| `recording/` | count-in, audio capture, and coordination of MIDI, audio and automation takes |
 | `audio_settings.rs` | driver and device inventory for audio settings |
 | `export*.rs` | WAV export coordination |
 | `showcase.rs` | the "Night Drive" demo project (`showcase_project()`) |
@@ -1214,7 +1214,7 @@ proposal with mockups in the internal notes and the owner's approval first (AGEN
 - [INSTALL.md](INSTALL.md): building, installing, working on klang-dsp locally.
 - The crate READMEs and the `//!` module docs, especially
   `komponist-engine/src/{api,compile,processor}.rs`, `komponist-app/src/actions.rs`,
-  `komponist-session/src/engine_sync.rs` and `komponist-model/src/document.rs`.
+  `komponist-session/src/{engine_sync.rs,recording/}` and `komponist-model/src/document.rs`.
 - The test fixtures in [test-plugins/README.md](../test-plugins/README.md) show what the plugin
   host must survive.
 

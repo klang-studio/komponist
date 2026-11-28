@@ -48,9 +48,9 @@ use komponist_ui::{fonts, px, widgets};
 use crate::actions::Action;
 use crate::keymap::Keymap;
 use crate::meters::Meters;
-use crate::record::Recording;
 use crate::ui_state::UiState;
 use komponist_session::engine_sync::EngineSync;
+use komponist_session::recording::midi::Recording;
 
 pub(super) fn parameter_value_texts(lang: Lang) -> komponist_model::params::ValueTexts {
     komponist_model::params::ValueTexts {
@@ -84,7 +84,7 @@ pub struct ViewCtx<'a> {
     pub recording: Option<&'a Recording>,
     /// Automation points and lane states of the current write pass.
     pub(crate) automation_capture:
-        Option<&'a crate::recording::automation_capture::AutomationCapture>,
+        Option<&'a komponist_session::recording::automation::AutomationCapture>,
     /// Live audio capture overlay, separate from the MIDI recording overlay.
     pub audio_recording: Option<&'a crate::recording::audio_record::AudioRecording>,
     /// Folder behind the provisional-recordings notice, if any.
