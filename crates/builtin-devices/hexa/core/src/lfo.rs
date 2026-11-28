@@ -10,6 +10,18 @@
 //! Hexa keeps the timing (its truncating `increment()`, one step per block),
 //! the one random generator shared by all LFOs and the order of its draws,
 //! delay, fade-in and amount.
+//!
+//! # Random draws
+//!
+//! All LFOs of all voices draw from one generator ([`Lfos::seed`]), in the
+//! order in which they start and wrap. Every shape but Smooth Random draws one
+//! value when an LFO starts and one on every wrap (the held value of
+//! [`LfoWaveform::SampleHold`]; the periodic shapes draw it too and ignore
+//! it, so adding Smooth Random left their sequence alone). Smooth Random draws two
+//! values when it starts, the held value first and then the next one, and one
+//! next value on every wrap, so it glides on from where the last cycle ended.
+//! An LFO whose shape changes to Smooth Random while it runs glides towards
+//! the next value it had (0 if it never had one) until its next wrap.
 
 use klang_dsp::rng::Rng;
 use klang_synth::{CyclicLfo, Shape};
@@ -54,6 +66,9 @@ pub enum LfoWaveform {
     Square,
     /// A new random value at the start of every period.
     SampleHold,
+    /// From one random value to the next over every period, without steps
+    /// (smoothstep); two draws at the start, one per wrap.
+    SmoothRandom,
 }
 
 impl LfoWaveform {
@@ -66,7 +81,14 @@ impl LfoWaveform {
             Self::SawDown => Shape::SawDown,
             Self::Square => Shape::Square,
             Self::SampleHold => Shape::SampleHold,
+            Self::SmoothRandom => Shape::SmoothRandom,
         }
+    }
+
+    /// Whether the shape follows random values (they differ between engines
+    /// with their own seeds).
+    pub const fn is_random(self) -> bool {
+        matches!(self, Self::SampleHold | Self::SmoothRandom)
     }
 }
 
@@ -130,14 +152,14 @@ impl Default for LfoParams {
 /// The LFOs of a patch.
 pub type LfoBank = crate::bank::Bank<LfoParams, MAX_LFOS>;
 
-/// Start of the sample-and-hold sequence, also in place of seed 0.
+/// Start of the random sequence of the LFOs, also in place of seed 0.
 const SEED: u32 = 0x2545_f491;
 
 /// Runtime state of all LFOs across all voices.
 pub(crate) struct Lfos {
     /// Free-running phase per LFO, joined by voices without key sync.
     global: [u32; MAX_LFOS],
-    /// Phase and sample-and-hold value per LFO and voice.
+    /// Phase and random values per LFO and voice.
     lfo: [[CyclicLfo; MAX_VOICES]; MAX_LFOS],
     /// Output at the start of the next block per LFO and voice.
     value: [[f32; MAX_VOICES]; MAX_LFOS],
@@ -145,7 +167,7 @@ pub(crate) struct Lfos {
     level: [[f32; MAX_VOICES]; MAX_LFOS],
     /// Seconds since note-on per voice, for the fade-in.
     age: [f32; MAX_VOICES],
-    /// Random values for sample and hold.
+    /// Random values of the random shapes, see the module documentation.
     rng: Rng,
 }
 
@@ -161,8 +183,8 @@ impl Lfos {
         }
     }
 
-    /// Restarts the sample-and-hold random sequence from `seed` (0 is
-    /// replaced, xorshift would stay at 0).
+    /// Restarts the random sequence of the LFOs from `seed` (0 is replaced,
+    /// xorshift would stay at 0).
     pub(crate) fn seed(&mut self, seed: u32) {
         self.rng = Rng::new(if seed == 0 { SEED } else { seed });
     }
@@ -186,7 +208,13 @@ impl Lfos {
         } else {
             self.global[l].wrapping_add(offset)
         });
-        lfo.set_held(self.rng.bipolar());
+        // Draw order: see the module documentation.
+        let held = self.rng.bipolar();
+        if p.waveform == LfoWaveform::SmoothRandom {
+            lfo.set_random(held, self.rng.bipolar());
+        } else {
+            lfo.set_held(held);
+        }
         self.set_output(l, voice, p, p.amount, p.fade_in);
     }
 
@@ -239,7 +267,12 @@ impl Lfos {
             };
             let lfo = &mut self.lfo[l][voice];
             if lfo.advance(increment(rate, block_seconds)) {
-                lfo.set_held(self.rng.bipolar());
+                let value = self.rng.bipolar();
+                if p.waveform == LfoWaveform::SmoothRandom {
+                    lfo.push_random(value);
+                } else {
+                    lfo.set_held(value);
+                }
             }
             let amount = if modulated.amounts & bit != 0 {
                 (p.amount + o1.get(ModTarget::LfoAmount(l))).clamp(0.0, 1.0)
@@ -292,6 +325,14 @@ mod tests {
         amounts: 0xff,
         fades: 0xff,
     };
+
+    fn lfo_params(waveform: LfoWaveform, rate: f32) -> LfoParams {
+        LfoParams {
+            waveform,
+            rate,
+            ..Default::default()
+        }
+    }
 
     fn at(waveform: LfoWaveform, t: f64) -> f32 {
         let mut lfo = CyclicLfo::new();
@@ -391,6 +432,78 @@ mod tests {
         let (_, end) = lfos.advance_voice(0, &params, 0b111, ALL, NO_ENV, 0.7);
         assert_ne!(end[0], first);
         assert!((-1.0..1.0).contains(&end[0]));
+    }
+
+    /// The values a fresh [`Lfos`] draws, in order.
+    fn draws(n: usize) -> Vec<f32> {
+        let mut rng = Rng::new(SEED);
+        (0..n).map(|_| rng.bipolar()).collect()
+    }
+
+    #[test]
+    fn smooth_random_draws_two_at_the_start_and_one_per_wrap() {
+        let params = [
+            lfo_params(LfoWaveform::SmoothRandom, 1.0),
+            lfo_params(LfoWaveform::Sine, 1.0),
+        ];
+        let r = draws(6);
+        let mut lfos = Lfos::new();
+        lfos.note_on(0, &params);
+        // Smooth Random: held, then next; the sine after it: one value.
+        let random = &lfos.lfo[0][0];
+        assert_eq!((random.held(), random.next_random()), (r[0], r[1]));
+        assert_eq!(lfos.lfo[1][0].held(), r[2]);
+        assert_eq!(lfos.value[0][0], r[0], "starts at the held value");
+
+        // Past one period: both wrap, in LFO order, one draw each.
+        lfos.advance_voice(0, &params, 0b11, ALL, NO_ENV, 0.6);
+        lfos.advance_voice(0, &params, 0b11, ALL, NO_ENV, 0.6);
+        let random = &lfos.lfo[0][0];
+        assert_eq!((random.held(), random.next_random()), (r[1], r[3]));
+        assert_eq!(lfos.lfo[1][0].held(), r[4]);
+        assert_eq!(lfos.rng.bipolar(), r[5]);
+    }
+
+    #[test]
+    fn other_shapes_draw_once_at_the_start_and_per_wrap() {
+        use LfoWaveform::*;
+        for waveform in [Sine, Triangle, SawUp, SawDown, Square, SampleHold] {
+            let params = [lfo_params(waveform, 1.0)];
+            let r = draws(3);
+            let mut lfos = Lfos::new();
+            lfos.note_on(0, &params);
+            assert_eq!(lfos.lfo[0][0].held(), r[0], "{waveform:?}");
+            lfos.advance_voice(0, &params, 1, ALL, NO_ENV, 0.6);
+            assert_eq!(lfos.lfo[0][0].held(), r[0], "{waveform:?}");
+            lfos.advance_voice(0, &params, 1, ALL, NO_ENV, 0.6);
+            assert_eq!(lfos.lfo[0][0].held(), r[1], "{waveform:?}");
+            assert_eq!(lfos.rng.bipolar(), r[2], "{waveform:?}");
+        }
+    }
+
+    #[test]
+    fn smooth_random_glides_across_wraps_within_range() {
+        let params = [lfo_params(LfoWaveform::SmoothRandom, 3.0)];
+        let mut lfos = Lfos::new();
+        lfos.note_on(0, &params);
+        let mut last = lfos.value[0][0];
+        let (mut wraps, mut low, mut high) = (0, f32::MAX, f32::MIN);
+        // A little over two seconds at 3 Hz: six wraps.
+        for _ in 0..(2.1 / BLOCK) as usize {
+            let before = phase(&lfos, 0, 0);
+            let (start, end) = lfos.advance_voice(0, &params, 1, ALL, NO_ENV, BLOCK);
+            if phase(&lfos, 0, 0) < before {
+                wraps += 1;
+            }
+            assert_eq!(start[0], last);
+            // Largest step: 1.5 · |next − held| · 3 Hz · BLOCK ≤ 0.02; none at a wrap.
+            assert!((end[0] - last).abs() < 0.02, "step {last} → {}", end[0]);
+            assert!((-1.0..=1.0).contains(&end[0]));
+            (low, high) = (low.min(end[0]), high.max(end[0]));
+            last = end[0];
+        }
+        assert_eq!(wraps, 6);
+        assert!(high - low > 0.2, "barely moves: {low}..{high}");
     }
 
     #[test]

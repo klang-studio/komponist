@@ -155,6 +155,19 @@ mod tests {
     }
 
     #[test]
+    fn smooth_random_is_stored_by_its_name() {
+        let mut patch = preset_patch(0).unwrap();
+        patch.lfos.push(hexa_core::LfoParams {
+            waveform: hexa_core::LfoWaveform::SmoothRandom,
+            ..Default::default()
+        });
+        let state = encode_state(&patch);
+        let text = String::from_utf8_lossy(&state);
+        assert!(text.contains(r#""waveform":"smooth_random""#), "{text}");
+        assert_eq!(decode_state(Some(&state)).unwrap(), patch);
+    }
+
+    #[test]
     fn missing_state_is_init_and_garbage_is_an_error() {
         assert_eq!(decode_state(None).unwrap(), preset_patch(0).unwrap());
         let err = decode_state(Some(b"{\"volume\": ")).unwrap_err();
