@@ -21,6 +21,7 @@ use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
 use rubato::{Fft, FixedSync, Indexing, Resampler};
 
 use crate::AudioError;
+use crate::decode::{MAX_SAMPLE_RATE, MIN_SAMPLE_RATE};
 
 /// Input frames per converter call.
 const CHUNK: usize = 1024;
@@ -61,9 +62,11 @@ pub struct StreamResampler {
 }
 
 impl StreamResampler {
-    /// A converter from `from` Hz to `to` Hz for `channels` channels.
+    /// A converter from `from` Hz to `to` Hz for `channels` channels. Both rates must be ones the
+    /// decoders accept ([`MIN_SAMPLE_RATE`] ..= [`MAX_SAMPLE_RATE`]).
     pub fn new(from: u32, to: u32, channels: usize) -> Result<StreamResampler, AudioError> {
-        if from == 0 || to == 0 || channels == 0 {
+        let rates = MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE;
+        if !rates.contains(&from) || !rates.contains(&to) || channels == 0 {
             return Err(AudioError::Resample(format!(
                 "{from} Hz to {to} Hz with {channels} channels"
             )));
@@ -135,6 +138,11 @@ impl StreamResampler {
             return Err(AudioError::Resample("channel count".into()));
         }
         let frames = input[0].as_ref().len();
+        // Unequal channels would leave the pending planes out of step (a slice past the end of
+        // the shorter one in `run`).
+        if input.iter().any(|channel| channel.as_ref().len() != frames) {
+            return Err(AudioError::Resample("channels of unequal length".into()));
+        }
         self.frames_in += frames as u64;
         if self.inner.is_none() {
             for (o, i) in out.iter_mut().zip(input) {
@@ -161,9 +169,16 @@ impl StreamResampler {
             if !self.pending[0].is_empty() {
                 self.run(Some(self.pending[0].len()), out)?;
             }
-            // Pure silence pushes the filter's tail out.
+            // Pure silence pushes the filter's tail out. A rate pair with a small common divisor
+            // (say 96001 Hz to 48 kHz) has an FFT block far larger than a converter chunk: nothing
+            // comes out before a whole block has gone in, so the bound grows with the block.
+            let limit = 64
+                + 2 * self
+                    .inner
+                    .as_ref()
+                    .map_or(0, |i| i.fft_size_in().div_ceil(CHUNK));
             let mut guard = 0;
-            while self.frames_out < expected && guard < 64 {
+            while self.frames_out < expected && guard < limit {
                 self.run(Some(0), out)?;
                 guard += 1;
             }

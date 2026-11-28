@@ -5,6 +5,8 @@ pub mod device_assets;
 pub mod device_canvas;
 pub mod effect_meter;
 pub mod frame;
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod native_layout;
 pub mod params;
 pub mod sampler_ui;

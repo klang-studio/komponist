@@ -67,6 +67,22 @@ pub use plugin::{
 
 pub use waveform_markers::edit_waveform_marker_state;
 
+/// Entry points of the fuzz targets in `fuzz/` (#230), for code that is private to this crate.
+/// Not an API: each one panics when it finds a broken invariant.
+#[doc(hidden)]
+pub mod fuzzing {
+    /// Decodes a VST3 state blob (`KPV3`, as `load_state` does) and checks the parts.
+    pub fn vst3_state(blob: &[u8]) {
+        crate::vst3::stream::check_state(blob);
+    }
+
+    /// Makes the `IBStream` calls encoded in `ops` on the host's in-memory stream over `initial`,
+    /// as a hostile plugin could in `getState` / `setState`.
+    pub fn vst3_stream(initial: &[u8], ops: &[u8]) {
+        crate::vst3::stream::exercise(initial, ops);
+    }
+}
+
 /// Bridge main thread. Loads plugin `plugin_id` from `bundle` and initialises it (not activated).
 /// The calling thread becomes the plugin's main thread for the lifetime of the instance.
 pub fn load(

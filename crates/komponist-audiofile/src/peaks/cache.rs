@@ -68,7 +68,15 @@ pub fn from_bytes(bytes: &[u8], id: &FileId) -> Option<PeakData> {
     }
     let channels = r.u32()? as usize;
     let level_count = r.u32()? as usize;
-    if channels == 0 || channels > crate::MAX_CHANNELS || level_count == 0 || level_count > 64 {
+    // The decoders refuse other rates, and the level count follows from the frame count: a level
+    // per factor of `FACTOR` down to a single bucket, as `PeakBuilder::finish` builds them.
+    if !(crate::decode::MIN_SAMPLE_RATE..=crate::decode::MAX_SAMPLE_RATE).contains(&sample_rate)
+        || channels == 0
+        || channels > crate::MAX_CHANNELS
+        || level_count == 0
+        || level_count > 64
+        || Some(level_count) != levels_for(frames)
+    {
         return None;
     }
     let mut levels = Vec::with_capacity(level_count);
@@ -92,10 +100,15 @@ pub fn from_bytes(bytes: &[u8], id: &FileId) -> Option<PeakData> {
             let mut c = Vec::with_capacity(buckets);
             let mut e = Vec::with_capacity(buckets);
             for bucket in 0..buckets {
-                c.push(Peak {
+                let peak = Peak {
                     min: r.f32()?,
                     max: r.f32()?,
-                });
+                };
+                // The decoders deliver finite samples, so every bucket holds a finite range.
+                if !(peak.min.is_finite() && peak.max.is_finite() && peak.min <= peak.max) {
+                    return None;
+                }
+                c.push(peak);
                 let value = r.f64()?;
                 let count = frames.saturating_sub(bucket as u64 * block).min(block);
                 let limit = f64::from(f32::MAX).powi(2) * count as f64;
@@ -118,6 +131,21 @@ pub fn from_bytes(bytes: &[u8], id: &FileId) -> Option<PeakData> {
         frames,
         levels,
     })
+}
+
+/// The number of levels [`PeakBuilder`](super::PeakBuilder) builds for `frames` frames; `None`
+/// for none (an empty file has no cache record).
+fn levels_for(frames: u64) -> Option<usize> {
+    let mut buckets = frames.div_ceil(PeakData::BASE_BLOCK);
+    if buckets == 0 {
+        return None;
+    }
+    let mut levels = 1;
+    while buckets > 1 {
+        buckets = buckets.div_ceil(PeakData::FACTOR);
+        levels += 1;
+    }
+    Some(levels)
 }
 
 /// Reads the cached peaks of `id` from `dir`.

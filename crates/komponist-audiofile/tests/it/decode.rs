@@ -351,7 +351,7 @@ fn errors_name_what_is_wrong() {
     write_wav_i16(&empty, 44100, 1, &[]);
     assert_eq!(AudioFile::open(&empty).unwrap_err(), AudioError::Empty);
     let long = dir.path("long.wav");
-    write_wav_i16(&long, 100, 1, &vec![0i16; 1000]); // 10 s
+    write_wav_i16(&long, 1000, 1, &vec![0i16; 10_000]); // 10 s
     assert_eq!(
         decode_all(&long, Some(5.0)).unwrap_err(),
         AudioError::TooLong
@@ -394,6 +394,19 @@ fn absurd_sample_rates_are_refused() {
     let ok = dir.path("ok.wav");
     write_wav_i16(&ok, 768_000, 1, &[1, 2, 3]);
     assert!(AudioFile::open(&ok).is_ok());
+    // #230 (found by the `resampler` fuzz target): a 4 Hz file would have been converted to the
+    // engine rate at 48 000 output frames per input frame.
+    for (name, rate) in [("slow.wav", 4), ("below.wav", 999)] {
+        let slow = dir.path(name);
+        write_wav_i16(&slow, rate, 1, &[1, 2, 3]);
+        assert!(matches!(
+            AudioFile::open(&slow),
+            Err(AudioError::Unsupported(_))
+        ));
+    }
+    let lowest = dir.path("lowest.wav");
+    write_wav_i16(&lowest, 1000, 1, &[1, 2, 3]);
+    assert!(AudioFile::open(&lowest).is_ok());
 }
 
 #[test]
@@ -487,4 +500,66 @@ fn aiff_c_float_samples_that_are_not_finite_decode_to_silence() {
     std::fs::write(&path, bytes).unwrap();
     let d = decode_all(&path, None).unwrap();
     assert_eq!(d.channels[0], vec![0.5, 0.0, 0.0, -0.25]);
+}
+
+/// The files proptest mutates: the compressed fixtures, and small WAV and AIFF files written here.
+fn seed_files(dir: &Scratch) -> Vec<(Vec<u8>, &'static str)> {
+    let mut seeds: Vec<(Vec<u8>, &'static str)> = FIXTURES
+        .iter()
+        .map(|name| {
+            let ext = name.rsplit('.').next().unwrap();
+            (std::fs::read(fixture(name)).unwrap(), ext)
+        })
+        .collect();
+    let wav = dir.path("seed-i16.wav");
+    write_wav_i16(&wav, 44100, 2, &[1, -2, 300, -400, 5000, -6000]);
+    seeds.push((std::fs::read(&wav).unwrap(), "wav"));
+    let float = dir.path("seed-f32.wav");
+    write_wav_f32(&float, 48000, &[noise(300, 1)]);
+    seeds.push((std::fs::read(&float).unwrap(), "wav"));
+    seeds
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(48))]
+
+    /// Damaged files of every format decode to an error or to sane audio (the `audio_file` fuzz
+    /// target runs the same harness).
+    #[test]
+    fn damaged_files_give_errors_or_sane_audio(
+        seed in 0usize..5,
+        flips in proptest::collection::vec((proptest::num::usize::ANY, proptest::num::u8::ANY), 0..12),
+        cut in proptest::option::of(proptest::num::usize::ANY),
+        seek in 0u64..100_000,
+    ) {
+        let dir = Scratch::new(&format!("prop-{seed}-{}", flips.len()));
+        let (mut bytes, ext) = seed_files(&dir).swap_remove(seed);
+        for (at, value) in flips {
+            // Half of the flips in the header area, where lengths, rates and channels are.
+            let limit = if at % 2 == 0 { 256.min(bytes.len()) } else { bytes.len() };
+            bytes[(at / 2) % limit] = value;
+        }
+        if let Some(cut) = cut {
+            bytes.truncate(cut % (bytes.len() + 1));
+        }
+        komponist_audiofile::fuzzing::audio_bytes(&dir.0, &bytes, ext, seek);
+    }
+
+    /// Arbitrary bytes behind each format's magic.
+    #[test]
+    fn arbitrary_bytes_behind_a_magic_never_panic(
+        magic in 0usize..5,
+        body in proptest::collection::vec(proptest::num::u8::ANY, 0..2048),
+    ) {
+        let (head, ext): (&[u8], &str) = [
+            (&b"RIFF\x00\x10\x00\x00WAVEfmt "[..], "wav"),
+            (&b"FORM\x00\x00\x10\x00AIFFCOMM"[..], "aiff"),
+            (&b"fLaC"[..], "flac"),
+            (&b"OggS"[..], "ogg"),
+            (&b"ID3\x04\x00\x00"[..], "mp3"),
+        ][magic];
+        let dir = Scratch::new(&format!("prop-magic-{magic}-{}", body.len()));
+        let bytes = [head, &body].concat();
+        komponist_audiofile::fuzzing::audio_bytes(&dir.0, &bytes, ext, body.len() as u64);
+    }
 }

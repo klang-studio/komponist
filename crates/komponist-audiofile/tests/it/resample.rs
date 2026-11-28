@@ -98,6 +98,26 @@ fn short_input_still_gets_the_right_length() {
     }
 }
 
+/// #230: rates outside what the decoders accept are refused, so no ratio can explode.
+#[test]
+fn rates_outside_the_decodable_range_are_errors() {
+    for (from, to) in [
+        (4, 192_000),
+        (999, 48_000),
+        (48_000, 999),
+        (768_001, 48_000),
+    ] {
+        assert!(
+            matches!(
+                StreamResampler::new(from, to, 1),
+                Err(AudioError::Resample(_))
+            ),
+            "{from} Hz to {to} Hz"
+        );
+    }
+    assert!(StreamResampler::new(1000, 192_000, 1).is_ok());
+}
+
 #[test]
 fn zero_rates_are_errors() {
     assert!(matches!(
@@ -170,4 +190,53 @@ fn same_rate_stream_passes_through() {
     stream.push(&[&x[200..]], &mut out).unwrap();
     stream.finish(&mut out).unwrap();
     assert_eq!(out[0], x);
+}
+
+/// #230: channels of unequal length used to panic in the converter (a slice past the end of the
+/// shorter one); they are an error now, and the converter goes on with valid input afterwards.
+#[test]
+fn channels_of_unequal_length_are_an_error() {
+    assert!(matches!(
+        resample(&[vec![0.0; 10], vec![0.0; 5]], 44100, 48000),
+        Err(AudioError::Resample(_))
+    ));
+    let mut converter = StreamResampler::new(44100, 48000, 2).unwrap();
+    let mut out = vec![Vec::new(); 2];
+    let uneven = [vec![0.25f32; 3000], vec![0.25f32; 2999]];
+    assert!(converter.push(&uneven, &mut out).is_err());
+    assert!(out.iter().all(Vec::is_empty));
+    converter
+        .push(&[vec![0.0; 100], vec![0.0; 100]], &mut out)
+        .unwrap();
+    converter.finish(&mut out).unwrap();
+    assert_eq!(out[0].len(), out[1].len());
+    assert_eq!(out[0].len(), (100 * 48000usize).div_ceil(44100));
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
+
+    /// Any rate, channel count and push pattern (the `resampler` fuzz target's harness).
+    #[test]
+    fn any_push_pattern_keeps_the_channels_aligned(
+        bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..24),
+    ) {
+        komponist_audiofile::fuzzing::resampler(&bytes);
+    }
+}
+
+/// #230 (found by the proptest): rates with a small common divisor have an FFT block of up to a
+/// whole second of input. The flush at the end stopped after 64 silent chunks, before the first
+/// block was complete, and a short clip came out empty.
+#[test]
+fn rate_pairs_with_huge_fft_blocks_still_deliver_every_frame() {
+    for (from, to, frames) in [
+        (96_001, 48_000, 37),
+        (321_021, 96_000, 37),
+        (47_999, 44_100, 5000),
+    ] {
+        let out = resample(&[noise(frames, 3)], from, to).unwrap();
+        let expected = (frames as u64 * u64::from(to)).div_ceil(u64::from(from));
+        assert_eq!(out[0].len() as u64, expected, "{from} Hz to {to} Hz");
+    }
 }

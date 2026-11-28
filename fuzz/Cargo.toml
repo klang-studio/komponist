@@ -1,0 +1,105 @@
+# Fuzz targets for the parsers of untrusted input (#230): cargo-fuzz, nightly only, outside the
+# workspace (see README.md). The harnesses live in the crates (`fuzzing` modules and `check_*`
+# functions), where the proptests of the normal test suite run them too.
+[package]
+name = "komponist-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace: never part of the komponist build.
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+komponist-audiofile = { path = "../crates/komponist-audiofile" }
+komponist-hosting = { path = "../crates/komponist-hosting" }
+komponist-ipc = { path = "../crates/komponist-ipc" }
+komponist-plugin-api = { path = "../crates/komponist-plugin-api" }
+postcard = { version = "1.1.3", features = ["use-std"] }
+
+[profile.release]
+debug = 1
+
+# Writes the seed corpora into `corpus/<target>/` from the repository's fixtures and encoders.
+[[bin]]
+name = "seed-corpora"
+path = "seed/main.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "control_decode"
+path = "fuzz_targets/control_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "control_stream"
+path = "fuzz_targets/control_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire_event"
+path = "fuzz_targets/wire_event.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "native_layout"
+path = "fuzz_targets/native_layout.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "plugin_messages"
+path = "fuzz_targets/plugin_messages.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vst3_state"
+path = "fuzz_targets/vst3_state.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vst3_stream"
+path = "fuzz_targets/vst3_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "audio_file"
+path = "fuzz_targets/audio_file.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "peak_cache"
+path = "fuzz_targets/peak_cache.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "resampler"
+path = "fuzz_targets/resampler.rs"
+test = false
+doc = false
+bench = false

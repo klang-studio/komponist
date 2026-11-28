@@ -2721,6 +2721,7 @@ name = "komponist-audiofile"
 version = "0.2.0"
 dependencies = [
  "hound",
+ "proptest",
  "realfft",
  "rubato",
  "symphonia",
@@ -3051,6 +3052,7 @@ dependencies = [
  "komponist-ipc",
  "komponist-plugin-api",
  "libc",
+ "proptest",
  "rtrb",
  "rustix 1.1.6",
  "serde_json",
@@ -3074,6 +3076,7 @@ dependencies = [
  "komponist-plugin-api",
  "komponist-rt",
  "postcard",
+ "proptest",
  "rustix 1.1.6",
  "serde",
  "windows-sys 0.61.2",
@@ -3116,6 +3119,7 @@ version = "0.2.0"
 dependencies = [
  "komponist-model",
  "postcard",
+ "proptest",
  "serde",
  "serde_json",
 ]

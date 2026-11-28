@@ -1187,8 +1187,10 @@ fn payload_len(header: &[u8]) -> usize {
     u32::from_le_bytes([header[1], header[2], header[3], 0]) as usize
 }
 
-/// Decodes exactly one message from `bytes` (trailing bytes are an error).
-fn decode<Rx: DeserializeOwned>(bytes: &[u8]) -> Result<Rx, ChannelError> {
+/// Decodes exactly one message from `bytes` (trailing bytes are an error), as a receive does
+/// with the payload of a whole message. Any bytes give a message or a `Codec` error. Public for
+/// the fuzz targets in `fuzz/` (#230).
+pub fn decode_message<Rx: DeserializeOwned>(bytes: &[u8]) -> Result<Rx, ChannelError> {
     let (msg, rest) = postcard::take_from_bytes(bytes).map_err(|e| codec_error(e.to_string()))?;
     if !rest.is_empty() {
         return Err(codec_error(format!(
@@ -1197,6 +1199,69 @@ fn decode<Rx: DeserializeOwned>(bytes: &[u8]) -> Result<Rx, ChannelError> {
         )));
     }
     Ok(msg)
+}
+
+/// Decodes `payload` as a message from the bridge and as one from the app. A message that decodes
+/// is well formed: encoding it again gives bytes that decode and encode to the same bytes (bytes,
+/// not messages, are compared: a NaN is not `==` itself). Panics otherwise. For the fuzz targets
+/// in `fuzz/` and the proptests (#230).
+#[doc(hidden)]
+pub fn check_payload(payload: &[u8]) {
+    fn check<M: Serialize + DeserializeOwned>(payload: &[u8]) {
+        if let Ok(msg) = decode_message::<M>(payload) {
+            let again = postcard::to_stdvec(&msg).expect("a decoded message encodes");
+            let decoded: M = decode_message(&again).expect("and decodes again");
+            assert_eq!(postcard::to_stdvec(&decoded).ok(), Some(again));
+        }
+    }
+    check::<BridgeMsg>(payload);
+    check::<ControlMsg>(payload);
+}
+
+/// Feeds `wire` to the app end of a fresh channel as a hostile bridge could write it (in pieces,
+/// then closing its end) and receives until the bytes are used up. Every receive gives a message,
+/// nothing yet or an error, and each one makes progress: the channel neither panics nor spins.
+/// Returns the messages that decoded. For the fuzz targets in `fuzz/` and the proptests (#230).
+#[doc(hidden)]
+pub fn receive_hostile_stream(wire: &[u8]) -> Result<Vec<BridgeMsg>, ChannelError> {
+    let (app, bridge) = socket_pair()?;
+    #[cfg(unix)]
+    let bridge = BridgeChannel::from_fd(bridge);
+    #[cfg(windows)]
+    let bridge = BridgeChannel::from_handle(bridge);
+    let mut received = Vec::new();
+    // Receives what has arrived; `false` once the channel reports its end (or an OS error).
+    let drain = |received: &mut Vec<BridgeMsg>| {
+        // A receive consumes at least one byte or returns `None`.
+        for _ in 0..=wire.len() + 1 {
+            match app.try_recv() {
+                Ok(Some(msg)) => received.push(msg),
+                Ok(None) => return true,
+                Err(ChannelError::Codec(_)) => {}
+                Err(_) => return false,
+            }
+        }
+        panic!("receives without progress");
+    };
+    // Pieces small enough for every socket buffer, received in between: the writes never block.
+    for piece in wire.chunks(4096) {
+        #[cfg(unix)]
+        {
+            let mut sent = 0;
+            while sent < piece.len() {
+                sent += rustix::net::send(bridge.as_fd(), &piece[sent..], sys::SEND_FLAGS)
+                    .map_err(io_error)?;
+            }
+        }
+        #[cfg(windows)]
+        sys::write_all(&bridge.pipe, piece)?;
+        if !drain(&mut received) {
+            return Ok(received);
+        }
+    }
+    drop(bridge);
+    drain(&mut received);
+    Ok(received)
 }
 
 impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
@@ -1716,7 +1781,9 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
                 // The first (or only) frame of a message.
                 let total = frame.total;
                 match frame.tag {
-                    TAG_LAST if frame.len == total => return decode(rx.payload(&frame)).map(Some),
+                    TAG_LAST if frame.len == total => {
+                        return decode_message(rx.payload(&frame)).map(Some);
+                    }
                     TAG_LAST => {
                         return Err(codec_error(format!(
                             "frame of {} bytes announces a message of {total}",
@@ -1759,7 +1826,7 @@ impl<Tx: Serialize, Rx: DeserializeOwned> Channel<Tx, Rx> {
             message.extend_from_slice(&buf[FRAME_HEADER..FRAME_HEADER + frame.len]);
             if frame.tag == TAG_LAST {
                 let msg = if rx.message.len() == total {
-                    decode(&rx.message)
+                    decode_message(&rx.message)
                 } else {
                     Err(codec_error("fragmented message ends early"))
                 };
@@ -2017,9 +2084,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn every_bridge_message_round_trips() {
-        let (app, bridge) = pair();
+    /// One of each bridge message (the round-trip test, and seeds for the hostile-input ones).
+    fn bridge_messages() -> Vec<BridgeMsg> {
         let param = ParamInfo {
             id: 1,
             name: "Cutoff".into(),
@@ -2040,7 +2106,7 @@ mod tests {
             channel: None,
             name: "Kick".into(),
         };
-        let messages = vec![
+        vec![
             BridgeMsg::DeviceAssets {
                 request: 9,
                 snapshot: None,
@@ -2214,7 +2280,13 @@ mod tests {
                 priority: 80,
                 detail: "Operation not permitted (os error 1)".into(),
             },
-        ];
+        ]
+    }
+
+    #[test]
+    fn every_bridge_message_round_trips() {
+        let (app, bridge) = pair();
+        let messages = bridge_messages();
         std::thread::scope(|scope| {
             scope.spawn(|| {
                 for msg in &messages {
@@ -2542,7 +2614,7 @@ mod tests {
     const STALL: Duration = Duration::from_millis(500);
 
     /// The frames `Channel::send` writes for `msg`.
-    fn frames_of(msg: &ControlMsg) -> Vec<u8> {
+    fn frames_of<M: Serialize>(msg: &M) -> Vec<u8> {
         let bytes = postcard::to_stdvec(msg).unwrap();
         let chunks: Vec<&[u8]> = bytes.chunks(MAX_PAYLOAD).collect();
         let mut wire = Vec::new();
@@ -2833,5 +2905,66 @@ mod tests {
         assert_eq!(ShmRegion::open(fd).unwrap().latency(), 5);
         stall_then_send(&app, &bridge, &whole[3..]);
         assert_eq!(bridge.try_recv().unwrap(), Some(ControlMsg::ListParams));
+    }
+
+    /// `bytes` with `flips` applied (byte position, new value) and cut at `cut`, if given.
+    fn damaged(mut bytes: Vec<u8>, flips: &[(usize, u8)], cut: Option<usize>) -> Vec<u8> {
+        if !bytes.is_empty() {
+            for &(at, value) in flips {
+                let len = bytes.len();
+                bytes[at % len] = value;
+            }
+        }
+        if let Some(cut) = cut {
+            bytes.truncate(cut % (bytes.len() + 1));
+        }
+        bytes
+    }
+
+    /// #230: a stream of valid frames arrives whole through the hostile-stream harness.
+    #[test]
+    fn the_hostile_stream_harness_receives_valid_frames() {
+        let messages = bridge_messages();
+        let wire: Vec<u8> = messages.iter().flat_map(frames_of).collect();
+        assert_eq!(receive_hostile_stream(&wire).unwrap(), messages);
+        assert_eq!(receive_hostile_stream(&[]).unwrap(), []);
+    }
+
+    proptest::proptest! {
+        /// Any payload decodes to a well-formed message or to an error (the `control_decode` fuzz
+        /// target).
+        #[test]
+        fn arbitrary_payloads_decode_or_fail(
+            bytes in proptest::collection::vec(proptest::num::u8::ANY, 0..256),
+        ) {
+            check_payload(&bytes);
+        }
+
+        /// Damaged encodings of every bridge message.
+        #[test]
+        fn damaged_bridge_messages_decode_or_fail(
+            index in proptest::sample::select((0..bridge_messages().len()).collect::<Vec<_>>()),
+            flips in proptest::collection::vec((proptest::num::usize::ANY, proptest::num::u8::ANY), 1..8),
+            cut in proptest::option::of(proptest::num::usize::ANY),
+        ) {
+            let bytes = postcard::to_stdvec(&bridge_messages()[index]).unwrap();
+            check_payload(&damaged(bytes, &flips, cut));
+        }
+
+        /// A hostile bridge writes damaged frames: the app receives, refuses or waits, and never
+        /// spins or panics (the `control_stream` fuzz target).
+        #[test]
+        fn a_hostile_byte_stream_never_stalls_the_app(
+            picks in proptest::collection::vec(proptest::num::usize::ANY, 0..6),
+            flips in proptest::collection::vec((proptest::num::usize::ANY, proptest::num::u8::ANY), 0..8),
+            cut in proptest::option::of(proptest::num::usize::ANY),
+        ) {
+            let messages = bridge_messages();
+            let wire: Vec<u8> = picks
+                .iter()
+                .flat_map(|pick| frames_of(&messages[pick % messages.len()]))
+                .collect();
+            receive_hostile_stream(&damaged(wire, &flips, cut)).unwrap();
+        }
     }
 }
