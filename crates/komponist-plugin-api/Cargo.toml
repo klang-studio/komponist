@@ -17,3 +17,5 @@ postcard.workspace = true
 
 [dev-dependencies]
 postcard = { workspace = true, features = ["use-std"] }
+# Hostile-input properties of the plugin-supplied layouts and messages (#230).
+proptest.workspace = true

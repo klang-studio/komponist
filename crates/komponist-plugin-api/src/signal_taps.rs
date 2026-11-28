@@ -256,12 +256,17 @@ impl BlockTaps {
         }
     }
 
-    /// A validated stream, or an empty slice when nothing was written.
+    /// A validated stream, or an empty slice when nothing was written. In shared memory the
+    /// writer is another process that [`BlockTaps::fill`] cannot hold to its checks, so the reader
+    /// checks again: a count past the plane or a non-finite sample discards the stream.
     pub fn samples(&self, index: usize) -> &[f32] {
         let Some((&count, samples)) = self.counts.get(index).zip(self.samples.get(index)) else {
             return &[];
         };
-        samples.get(..count as usize).unwrap_or_default()
+        samples
+            .get(..count as usize)
+            .filter(|samples| samples.iter().all(|s| s.is_finite()))
+            .unwrap_or_default()
     }
 }
 
@@ -315,5 +320,13 @@ mod tests {
         assert!(block.samples(1).is_empty() && block.samples(2).is_empty());
         block.clear();
         assert!(block.samples(0).is_empty());
+
+        // #230: written past `fill` (by a hostile bridge through shared memory).
+        block.counts = [3, u32::MAX, MAX_BLOCK_SAMPLES as u32 + 1, 1];
+        block.samples[0][1] = f32::NAN;
+        block.samples[3][0] = 0.5;
+        assert!(block.samples(0).is_empty() && block.samples(1).is_empty());
+        assert!(block.samples(2).is_empty());
+        assert_eq!(block.samples(3), [0.5]);
     }
 }
