@@ -103,6 +103,13 @@ impl<T: Copy, const N: usize> ShmRing<T, N> {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Tests: overwrites both indices, as a corrupt or hostile peer can.
+    #[cfg(test)]
+    pub(crate) fn corrupt(&self, head: u32, tail: u32) {
+        self.head.store(head, Ordering::Release);
+        self.tail.store(tail, Ordering::Release);
+    }
 }
 
 #[cfg(test)]

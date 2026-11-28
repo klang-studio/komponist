@@ -45,6 +45,8 @@ windows-sys = { workspace = true, features = [
 
 [dev-dependencies]
 assert_no_alloc.workspace = true
+# Hostile-input properties of the control channel (#230).
+proptest.workspace = true
 
 [target.'cfg(windows)'.dev-dependencies]
 # Test children that crash on purpose turn off the Windows Error Reporting dialog (SetErrorMode).

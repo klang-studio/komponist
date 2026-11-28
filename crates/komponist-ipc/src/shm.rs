@@ -429,6 +429,30 @@ impl WireEvent {
     }
 }
 
+/// Decodes `event` and checks that what decodes encodes back to an event that decodes the same
+/// way (a NaN value compared by its bits). Panics otherwise. For the fuzz targets in `fuzz/` and
+/// the proptests (#230).
+#[doc(hidden)]
+pub fn check_wire_event(event: &WireEvent) {
+    let Some(kind) = event.decode() else {
+        assert!(!(KIND_NOTE_ON..=KIND_ALL_NOTES_OFF).contains(&event.kind));
+        return;
+    };
+    let same = |a: WireEventKind, b: WireEventKind| match (a, b) {
+        (
+            WireEventKind::ParamValue { id, value },
+            WireEventKind::ParamValue {
+                id: other,
+                value: other_value,
+            },
+        ) => id == other && value.to_bits() == other_value.to_bits(),
+        (a, b) => a == b,
+    };
+    let again = WireEvent::new(event.offset, kind);
+    assert_eq!(again.offset, event.offset);
+    assert!(again.decode().is_some_and(|k| same(k, kind)), "{event:?}");
+}
+
 /// Why a mapping could not be opened.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShmError {
@@ -1871,6 +1895,29 @@ mod tests {
         assert_eq!(unknown.decode(), None);
     }
 
+    proptest::proptest! {
+        /// Any 32 bytes as a wire event: decoding is total, and what decodes encodes back to an
+        /// event that decodes the same way (the `wire_event` fuzz target).
+        #[test]
+        fn any_wire_event_decodes_consistently(
+            fields in (proptest::num::u32::ANY, 0u32..8, proptest::num::u32::ANY, proptest::num::u32::ANY),
+            value in proptest::num::u64::ANY,
+            data in proptest::array::uniform4(proptest::num::u8::ANY),
+            reserved in proptest::num::u32::ANY,
+        ) {
+            let (offset, kind, note_id, param_id) = fields;
+            check_wire_event(&WireEvent {
+                offset,
+                kind,
+                note_id,
+                param_id,
+                value: f64::from_bits(value),
+                data,
+                reserved,
+            });
+        }
+    }
+
     /// A region with the bridge marked active, and its three role objects.
     fn active() -> (BridgeClient, BridgeServer, BridgeMonitor) {
         let region = Arc::new(ShmRegion::create().unwrap());
@@ -2149,6 +2196,151 @@ mod tests {
         assert_eq!(request.event_count, 1);
         assert_eq!(server.pop_event(), Some(param(3, 3, 3.0)));
         assert_eq!(server.pop_event(), None);
+    }
+
+    /// #230: a hostile bridge writes whatever it likes into the shared memory: the header
+    /// constants, the ring indices, its state, the result, the signal taps. The app side rejects
+    /// or clamps every value: it never reads outside its buffers, never takes a stale result, and
+    /// a bridge restarted on the region refuses it.
+    #[test]
+    fn a_hostile_bridge_cannot_corrupt_the_app() {
+        let region = Arc::new(ShmRegion::create().unwrap());
+        let hostile = ShmRegion::open(dup(&region)).unwrap();
+        let mut client = BridgeClient::new(Arc::clone(&region));
+        let mut monitor = BridgeMonitor::new(Arc::clone(&region));
+        let theirs = hostile.ptr.as_ptr();
+        // SAFETY: the "bridge" writes its own view of the mapping, as another process can; no
+        // reference to these words is alive, and nothing else runs.
+        unsafe {
+            let header = &raw mut (*theirs).header;
+            (&raw mut (*header).magic).write_volatile(0xdead_beef);
+            (&raw mut (*header).version).write_volatile(u32::MAX);
+            (&raw mut (*header).size).write_volatile(1);
+            (&raw mut (*header).max_block).write_volatile(u32::MAX);
+        }
+        assert_eq!(
+            ShmRegion::open(dup(&region)).unwrap_err(),
+            ShmError::BadMagic
+        );
+
+        let input = [0.5f32; 64];
+        let both = [&input[..], &input[..]];
+        let header = &hostile.layout().header;
+        header.bridge_state.store(77, Ordering::Release);
+        assert_eq!(region.bridge_state(), BridgeState::Failed);
+        assert_eq!(
+            client.begin_block(&spec(64), both, None, &[]),
+            Err(BlockError::NotActive)
+        );
+        hostile.set_bridge_state(BridgeState::Active);
+
+        // Output events: a fill level beyond the capacity, and one wrapped below zero.
+        let outputs = &hostile.layout().output_events;
+        for (head, tail) in [
+            (0, OUTPUT_EVENT_CAPACITY as u32 + 1),
+            (10, 3),
+            (0, u32::MAX),
+        ] {
+            outputs.corrupt(head, tail);
+            assert_eq!(monitor.pop_output_event(), None, "{head}..{tail}");
+        }
+        // The input ring's head (the bridge consumes it) claims a full ring: no events go in.
+        let inputs = &hostile.layout().input_events;
+        inputs.corrupt(5, 0);
+        assert_eq!(
+            client.begin_block(&spec(64), both, None, &[param(0, 1, 0.5)]),
+            Err(BlockError::TooManyEvents)
+        );
+        inputs.corrupt(0, 0);
+
+        // Completion with a result that answers another request: late, nothing is taken.
+        let seq = client.begin_block(&spec(64), both, None, &[]).unwrap();
+        let result = |seq: u32, status: u32| BlockResult {
+            seq,
+            status,
+            dropped_events: u32::MAX,
+            reserved: u32::MAX,
+        };
+        // SAFETY: as above; the app reads `result` only after `done_seq`, stored below.
+        unsafe { header.result.get().write(result(seq.wrapping_add(9), 0)) };
+        header.done_seq.store(seq, Ordering::Release);
+        let mut out = [[7f32; 64]; 2];
+        let [l, r] = &mut out;
+        let soon = Instant::now() + Duration::from_millis(20);
+        assert_eq!(client.wait_done(seq, soon, [l, r]), Err(BlockError::Late));
+        assert!(client.signal_taps(seq).is_none());
+
+        // The right sequence with an unknown status, every flag and an absurd drop count: the
+        // values arrive as they are (the external processor treats a status other than `Ok` as a
+        // failed block), the copy stays within the app's own request.
+        let seq = client.begin_block(&spec(16), both, None, &[]).unwrap();
+        // SAFETY: as above. The signal taps: counts first, then the planes (`BlockTaps`, repr(C)).
+        unsafe {
+            header.result.get().write(result(seq, 99));
+            let taps = (*theirs).signal_taps.get().cast::<u32>();
+            let counts = [u32::MAX, 2, 2, signal_taps::MAX_BLOCK_SAMPLES as u32 + 1];
+            for (i, count) in counts.into_iter().enumerate() {
+                taps.add(i).write_volatile(count);
+            }
+            let planes = taps.add(signal_taps::MAX_TAPS).cast::<f32>();
+            planes
+                .add(signal_taps::MAX_BLOCK_SAMPLES)
+                .write_volatile(f32::NAN);
+            planes
+                .add(2 * signal_taps::MAX_BLOCK_SAMPLES)
+                .write_volatile(0.25);
+            planes
+                .add(2 * signal_taps::MAX_BLOCK_SAMPLES + 1)
+                .write_volatile(-0.25);
+        }
+        header.done_seq.store(seq, Ordering::Release);
+        let mut out = [[7f32; 64]; 2];
+        let [l, r] = &mut out;
+        let soon = Instant::now() + Duration::from_millis(20);
+        let got = client.wait_done(seq, soon, [l, r]).unwrap();
+        assert_eq!((got.status, got.dropped_events), (99, u32::MAX));
+        assert!(out.iter().all(|ch| ch[16..].iter().all(|&s| s == 7.0)));
+        let taps = client.signal_taps(seq).unwrap();
+        assert!(taps.samples(0).is_empty(), "a count past the plane");
+        assert!(taps.samples(1).is_empty(), "a NaN in the stream");
+        assert_eq!(taps.samples(2), [0.25, -0.25]);
+        assert!(taps.samples(3).is_empty());
+        assert!(taps.samples(4).is_empty(), "no such tap");
+    }
+
+    /// #230: request fields the bridge cannot trust (frame and event counts past the limits, every
+    /// flag) are clamped when it takes the request: it never reads past the ring or the buffers.
+    #[test]
+    fn hostile_request_fields_are_clamped() {
+        let region = Arc::new(ShmRegion::create().unwrap());
+        region.set_bridge_state(BridgeState::Active);
+        let mut server = BridgeServer::new(Arc::clone(&region));
+        let header = &region.layout().header;
+        // Two events in the ring, a request that claims many more.
+        // SAFETY: no `BridgeClient` exists: this test is the only input-ring producer, and it
+        // writes the request before publishing it, like `begin_block`.
+        unsafe {
+            region.layout().input_events.push(param(0, 1, 0.5)).unwrap();
+            region.layout().input_events.push(param(1, 2, 0.5)).unwrap();
+            header.request.get().write(BlockRequest {
+                seq: 1,
+                frames: u32::MAX,
+                flags: u32::MAX,
+                event_count: u32::MAX,
+                ..BlockRequest::default()
+            });
+        }
+        header.request_seq.store(1, Ordering::Release);
+        let request = server.wait_request(Some(Instant::now())).unwrap();
+        assert_eq!(request.frames, MAX_BLOCK as u32);
+        let popped = std::iter::from_fn(|| server.pop_event()).count();
+        assert_eq!(popped, 2);
+        let (input, sidechain, output) = server.audio_with_sidechain(request.frames as usize);
+        assert_eq!(input[0].len(), MAX_BLOCK);
+        assert!(sidechain.is_some_and(|sc| sc[1].len() == MAX_BLOCK));
+        assert_eq!(output[1].len(), MAX_BLOCK);
+        server.finish(BlockResult::default());
+        assert_eq!(header.done_seq.load(Ordering::Acquire), 1);
     }
 
     #[test]
