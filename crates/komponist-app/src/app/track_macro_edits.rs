@@ -49,7 +49,7 @@ impl App {
             Action::BeginValue { track, index } => {
                 if let Some(label) = self.track_macro_undo(track, index) {
                     self.end_gesture();
-                    self.doc.begin_gesture(label);
+                    self.session.document_mut().begin_gesture(label);
                     self.note_macro_gesture(track, index);
                 }
             }
@@ -75,22 +75,22 @@ impl App {
                 {
                     return;
                 }
-                let before = self.doc.revision();
+                let before = self.session.document().revision();
                 self.apply(&label, |project| {
                     macros::set_macro_value(project, track, index, value)
                 });
-                let after = self.doc.revision();
+                let after = self.session.document().revision();
                 if after != before {
-                    self.engine.refresh_snapshot_automation(self.doc.project());
-                    let command = self.engine.macro_value_command(
+                    self.session.refresh_snapshot_automation();
+                    let command = self.session.engine_mut().macro_value_command(
                         track,
                         index,
                         komponist_session::engine_sync::MacroValueEdit::Base(value.clamp(0.0, 1.0)),
                     );
-                    if self.doc.in_gesture() {
-                        self.engine.fast_path(command, before, after);
+                    if self.session.document().in_gesture() {
+                        self.session.engine_mut().fast_path(command, before, after);
                     } else {
-                        self.engine.send(command);
+                        self.session.engine_mut().send(command);
                     }
                 }
             }
@@ -266,7 +266,7 @@ impl App {
     fn macro_catalog(&self, track: TrackId) -> Option<Catalog<'_>> {
         Catalog::for_project(
             self.project(),
-            &self.engine,
+            self.session.engine(),
             self.lang,
             AutomationOwner::Track(track),
         )
@@ -295,7 +295,7 @@ impl App {
         let from_macro = old_driver.and_then(|driver| {
             let slot = &track.macros.0[usize::from(driver)];
             let mapping = slot.mappings.iter().find(|m| m.target == target)?;
-            let value = effective_value(self.project(), &self.engine, track, driver);
+            let value = effective_value(self.project(), self.session.engine(), track, driver);
             Some(
                 descriptor
                     .info
@@ -306,10 +306,12 @@ impl App {
         let owner = AutomationOwner::Track(track_id);
         let current = from_macro
             .or_else(|| self.recording.automation().current_value(owner, &target))
-            .or_else(|| automation_control_value(self.project(), &self.engine, owner, &target))
+            .or_else(|| {
+                automation_control_value(self.project(), self.session.engine(), owner, &target)
+            })
             .or_else(|| previous.map(|plain| descriptor.info.to_normalized(plain) as f32))
             .unwrap_or(descriptor.base);
-        let value = effective_value(self.project(), &self.engine, track, index);
+        let value = effective_value(self.project(), self.session.engine(), track, index);
         let (min, max, invert) = initial_range(value, current);
         let mapping = Mapping {
             target,
@@ -343,7 +345,11 @@ impl App {
         events: &PluginParamBatch,
         capture: bool,
     ) {
-        if !self.engine.plugin_parameter_slot_matches(slot, device) {
+        if !self
+            .session
+            .engine()
+            .plugin_parameter_slot_matches(slot, device)
+        {
             return;
         }
         let mapping = self.ui.track_macros.mapping.is_some_and(|track| {
@@ -364,7 +370,7 @@ impl App {
                         .recording
                         .automation()
                         .plugin_parameter_writing(device, id)
-                    && self.engine.plugin_mapping_parameter(device, id)
+                    && self.session.engine().plugin_mapping_parameter(device, id)
             });
             let loaded_base = match edit.kind {
                 ParameterEditKind::Value { id, .. } if !temporary && candidate.is_none() => {
@@ -372,7 +378,7 @@ impl App {
                 }
                 _ => None,
             };
-            let previous = self.engine.update_plugin_parameter(
+            let previous = self.session.engine_mut().update_plugin_parameter(
                 device,
                 edit.kind,
                 temporary,
@@ -415,9 +421,9 @@ impl App {
             return;
         };
         let index = self.ui.track_macros.selected(track);
-        let before = self.doc.revision();
+        let before = self.session.document().revision();
         match self.map_track_macro(track, index, target.clone(), previous) {
-            Some(true) if self.doc.revision() != before => {
+            Some(true) if self.session.document().revision() != before => {
                 self.sync_project();
             }
             Some(false) => {
@@ -428,13 +434,23 @@ impl App {
                     .track(track)
                     .is_some_and(|owner| owner.macros.driver(&target).is_some())
                 {
-                    self.engine.send(Command::MacroReassert { track });
+                    self.session
+                        .engine_mut()
+                        .send(Command::MacroReassert { track });
                 } else if let (Some(value), Some(slot)) = (
                     previous,
-                    self.engine.program().and_then(|p| p.slots.slot(device)),
+                    self.session
+                        .engine()
+                        .program()
+                        .and_then(|p| p.slots.slot(device)),
                 ) {
-                    self.engine.send(Command::SetParam { slot, id, value });
-                    self.engine.host_mut().preview_param(device, id, value);
+                    self.session
+                        .engine_mut()
+                        .send(Command::SetParam { slot, id, value });
+                    self.session
+                        .engine_mut()
+                        .host_mut()
+                        .preview_param(device, id, value);
                 }
             }
             Some(true) | None => {}
@@ -451,7 +467,7 @@ impl App {
         let Some(catalog) = self.macro_catalog(track) else {
             return;
         };
-        let macro_value = effective_value(self.project(), &self.engine, owner, index);
+        let macro_value = effective_value(self.project(), self.session.engine(), owner, index);
         let values: Vec<_> = slot
             .mappings
             .iter()
@@ -491,9 +507,16 @@ impl App {
             if !external.is_empty() {
                 self.sync_project();
                 for (device, id, value) in external {
-                    if let Some(slot) = self.engine.program().and_then(|p| p.slots.slot(device)) {
+                    if let Some(slot) = self
+                        .session
+                        .engine()
+                        .program()
+                        .and_then(|p| p.slots.slot(device))
+                    {
                         // A native gesture may still be holding a different value.
-                        self.engine.send(Command::SetParam { slot, id, value });
+                        self.session
+                            .engine_mut()
+                            .send(Command::SetParam { slot, id, value });
                     }
                 }
             }

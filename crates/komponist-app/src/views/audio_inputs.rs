@@ -948,8 +948,8 @@ mod tests {
                     .as_deref()
                     .is_some_and(|detail| detail.contains("alsa:pcm:hotone:capture_1"))
             );
-            assert!(h.state().engine.audio_input_config().is_none());
-            assert_eq!(h.state().engine.audio_input_channels(), 4);
+            assert!(h.state().engine().audio_input_config().is_none());
+            assert_eq!(h.state().engine().audio_input_channels(), 4);
 
             h.key_press_modifiers(
                 egui::Modifiers {
@@ -971,7 +971,7 @@ mod tests {
                     .accesskit_node()
                     .is_disabled()
             );
-            let sources = h.state().engine.jack_capture_sources().unwrap().to_vec();
+            let sources = h.state().engine().jack_capture_sources().unwrap().to_vec();
             let mut refreshed = sources.clone();
             refreshed.swap(0, 1);
             let tracks_before = h.state().project().tracks.len();
@@ -1039,7 +1039,7 @@ mod tests {
                     stereo: false
                 })
             );
-            assert!(h.state().engine.audio_input_config().is_none());
+            assert!(h.state().engine().audio_input_config().is_none());
         }
     }
 }

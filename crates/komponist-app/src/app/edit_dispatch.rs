@@ -16,7 +16,7 @@ impl App {
             EditAction::Redo => self.edit_history(Document::redo),
             EditAction::BeginGesture { label } => {
                 self.end_gesture();
-                self.doc.begin_gesture(label);
+                self.session.document_mut().begin_gesture(label);
             }
             EditAction::EndGesture => self.end_gesture(),
             EditAction::CancelGesture => self.cancel_gesture(),
@@ -214,8 +214,8 @@ impl App {
     fn edit_history(&mut self, apply: impl FnOnce(&mut Document) -> bool) {
         // Finish a gesture before stepping history, then propagate the restored device states.
         self.end_gesture();
-        let before = Arc::clone(self.doc.project());
-        if apply(&mut self.doc) {
+        let before = Arc::clone(self.session.document().project());
+        if apply(self.session.document_mut()) {
             self.cancel_plugin_asset_edits();
             self.follow_device_states(&before);
         }

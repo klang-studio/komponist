@@ -142,7 +142,7 @@ Their READMEs record provenance.
 | [`komponist-tokens`](../crates/komponist-tokens/README.md) | Generated design tokens, colour conversion and embedded font assets |
 | [`komponist-i18n`](../crates/komponist-i18n/README.md) | Generated typed DE/EN text catalog from Fluent sources |
 | [`komponist-ui`](../crates/komponist-ui/README.md) | Shared egui theme, widgets, canvases, plugin-frame header, gallery |
-| [`komponist-session`](../crates/komponist-session/src/lib.rs) | Headless document/engine synchronization, audio and MIDI I/O, device host capabilities, project file I/O |
+| [`komponist-session`](../crates/komponist-session/README.md) | Headless session and document lifecycle, engine synchronization, audio and MIDI I/O, device host capabilities, project file I/O |
 | [`komponist-app`](../crates/komponist-app/README.md) | Application shell, actions/keymap, views/dialogs, project lifecycle |
 
 `komponist-model` uses `komponist-tokens` for parameter layout geometry and receives localized
@@ -943,8 +943,11 @@ changes use continuous values. Source recovery/relink and tempo analysis share f
 
 ### 9.3 Application shell (`komponist-app`)
 
-`App` owns the document from `komponist-model` and coordinates UI state,
-`komponist-session::engine_sync::EngineSync`, and the application controllers.
+`App` owns the UI state, application controllers and a `komponist_session::Session`.
+The session owns the open `Document` from `komponist-model`, its file path and `EngineSync`.
+On project replacement the app closes plugin windows and discards the take before the session
+resets the engine and sets the new path base. After a successful Save As, the session adopts
+the rebased document and updates live asset links in the existing processors.
 The recording controller owns the count-in, MIDI and audio takes, and automation capture.
 The export controller owns the render lifecycle and export history. Plugin frame state owns
 window focus and bridge activation. The audio settings controller runs driver and device

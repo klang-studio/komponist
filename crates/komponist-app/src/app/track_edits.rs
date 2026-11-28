@@ -45,14 +45,17 @@ impl App {
         {
             return;
         }
-        let before = self.doc.revision();
+        let before = self.session.document().revision();
         if self.apply("undo-change-master", |p| edits::set_master_prop(p, prop))
-            && self.doc.in_gesture()
+            && self.session.document().in_gesture()
             && let ChannelProp::VolumeDb(db) = prop
         {
-            let after = self.doc.revision();
-            self.engine
-                .fast_path(Command::SetMasterGain(fader_gain(db)), before, after);
+            let after = self.session.document().revision();
+            self.session.engine_mut().fast_path(
+                Command::SetMasterGain(fader_gain(db)),
+                before,
+                after,
+            );
         }
     }
 
@@ -140,7 +143,7 @@ impl App {
             TrackProp::MonitorMode(_) => "undo-audio-monitor",
             _ => "undo-change-track",
         };
-        let before = self.doc.revision();
+        let before = self.session.document().revision();
         let fast = match &prop {
             TrackProp::Channel(c) => Some(*c),
             _ => None,
@@ -148,13 +151,17 @@ impl App {
         if !self.apply(label, |p| edits::set_track_prop(p, &tracks, prop)) {
             return;
         }
-        let (Some(channel), true) = (fast, self.doc.in_gesture()) else {
+        let (Some(channel), true) = (fast, self.session.document().in_gesture()) else {
             return;
         };
-        let after = self.doc.revision();
+        let after = self.session.document().revision();
         // Mute and solo also go out as the gate table: with buses, solo follows the signal path.
         let gates = matches!(channel, ChannelProp::Mute(_) | ChannelProp::Solo(_))
-            .then(|| self.engine.gates(self.doc.project()))
+            .then(|| {
+                self.session
+                    .engine()
+                    .gates(self.session.document().project())
+            })
             .flatten();
         for track in tracks {
             let command = match channel {
@@ -166,10 +173,10 @@ impl App {
                 ChannelProp::Mute(mute) => Command::SetTrackMute { track, mute },
                 ChannelProp::Solo(solo) => Command::SetTrackSolo { track, solo },
             };
-            self.engine.fast_path(command, before, after);
+            self.session.engine_mut().fast_path(command, before, after);
         }
         if let Some(command) = gates {
-            self.engine.fast_path(command, before, after);
+            self.session.engine_mut().fast_path(command, before, after);
         }
     }
 
@@ -219,17 +226,17 @@ impl App {
         {
             return;
         }
-        let before = self.doc.revision();
+        let before = self.session.document().revision();
         if !self.apply("undo-change-send", |p| edits::set_send(p, send, prop)) {
             return;
         }
-        if let (edits::SendProp::LevelDb(_), true) = (prop, self.doc.in_gesture()) {
-            let after = self.doc.revision();
+        if let (edits::SendProp::LevelDb(_), true) = (prop, self.session.document().in_gesture()) {
+            let after = self.session.document().revision();
             let db = self
                 .project()
                 .find_send(send)
                 .map_or(0.0, |(t, i)| t.sends[i].level_db);
-            self.engine.fast_path(
+            self.session.engine_mut().fast_path(
                 Command::SetSendGain {
                     send,
                     gain: fader_gain(db),

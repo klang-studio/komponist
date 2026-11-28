@@ -393,7 +393,7 @@ Rules that follow from this picture:
 | Crate | Lines | Read first |
 |---|---:|---|
 | [`komponist-app`](../crates/komponist-app/README.md) | ~119k (40k tests) | `main.rs`, `app.rs`, `actions.rs` |
-| [`komponist-session`](../crates/komponist-session/src/lib.rs) | ~4k | `engine_sync.rs`, `device_host.rs`, `project_io.rs` |
+| [`komponist-session`](../crates/komponist-session/README.md) | ~4k | `session.rs`, `engine_sync.rs`, `device_host.rs`, `project_io.rs` |
 | [`builtin-devices/*`](../crates/builtin-devices/README.md) | ~47k (Hexa alone 23k) | `core/src/processor.rs`, `delay/src/lib.rs` |
 | [`komponist-engine`](../crates/komponist-engine/README.md) | ~35k | `api.rs`, `compile.rs`, `program.rs`, `engine.rs` |
 | [`komponist-ui`](../crates/komponist-ui/README.md) | ~31k | `lib.rs`, `widgets/`, `timeline/mod.rs` |
@@ -952,7 +952,7 @@ Useful flags: `--demo`, `--null-audio`, `--lang de|en`, `--scale F`, `--open-plu
 
 | Path | What lives there |
 |---|---|
-| `app.rs`, `app/` | `App`: owns `Document`, `UiState`, `EngineSync`, views, dialogs; `show` and `dispatch` |
+| `app.rs`, `app/` | `App`: owns `Session`, `UiState`, views and dialogs; `show` and `dispatch` |
 | `actions.rs`, `keymap.rs`, `application_menu.rs` | actions, keyboard chords per focus area, menus (native on macOS) |
 | `views/` (~39k lines) | arrangement, piano roll, step sequencer, audio editor, mixer, devices, inspector, browser, automation, routing |
 | `dialogs/`, `windows/`, `panels/` | settings, export, file dialogs; plugin frame windows; transport bar, status bar, dock tabs |

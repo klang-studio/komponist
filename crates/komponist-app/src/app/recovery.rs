@@ -105,13 +105,13 @@ impl App {
             self.recovery.set_waker(move || ctx.request_repaint());
         }
         let dirty = self.ui.screen == Screen::Project
-            && (self.doc.is_dirty() || !self.deferred_plugin_edits().is_empty());
+            && (self.session.document().is_dirty() || !self.deferred_plugin_edits().is_empty());
         let deferred = self.param_undo.deferred_edits();
         let (failure, due) = self.recovery.update(DocumentState {
             dirty,
-            project: self.doc.project(),
+            project: self.session.document().project(),
             deferred,
-            path: self.project_path.as_deref(),
+            path: self.session.project_path(),
         });
         if let Some(error) = failure {
             let reason = file_io_reason(&error, self.lang);

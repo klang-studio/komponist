@@ -439,7 +439,7 @@ impl App {
         if armed.iter().any(|id| !self.audio_arm_allowed(*id)) {
             return false;
         }
-        let provisional = self.project_path.is_none();
+        let provisional = self.project_path().is_none();
         let directory = if let Some(directory) = self.project_dir() {
             directory.join("Takes")
         } else {
@@ -478,7 +478,7 @@ impl App {
                 },
             })
             .collect();
-        let rate = self.engine.sample_rate();
+        let rate = self.session.engine().sample_rate();
         let format = match self.settings.capture_format {
             CaptureFormat::Pcm24 => RecordingFormat::Pcm24,
             CaptureFormat::Float32 => RecordingFormat::Float32,
@@ -506,7 +506,9 @@ impl App {
                     material: false,
                     staging: None,
                 });
-                self.engine.send(Command::SetRecorder(recorder));
+                self.session
+                    .engine_mut()
+                    .send(Command::SetRecorder(recorder));
                 true
             }
             Err(error) => {
@@ -556,7 +558,7 @@ impl App {
     /// The live view of the running take: its growing clips and finished laps.
     fn refresh_take_view(&mut self) {
         let project = self.project().clone();
-        let head = self.engine.playhead();
+        let head = self.session.engine().playhead();
         let Some(capture) = &mut self.recording.audio.capture else {
             return;
         };
@@ -685,7 +687,10 @@ impl App {
                     commits.push(midi);
                 }
                 if let Some(midi) = self.recording.midi.take().and_then(|recording| {
-                    recording.commit(self.doc.project(), self.engine.playhead())
+                    recording.commit(
+                        self.session.document().project(),
+                        self.session.engine().playhead(),
+                    )
                 }) {
                     commits.push(midi);
                 }
@@ -710,7 +715,7 @@ impl App {
                     });
                 }
                 self.set_status(self.lang.audio_record_failed(error), StatusKind::Error);
-                self.engine.send(Command::StopRecording);
+                self.session.engine_mut().send(Command::StopRecording);
                 drop(capture); // joins/IO only on this non-RT thread
             }
         }
@@ -789,7 +794,7 @@ impl App {
                                 .cloned()
                                 .unwrap_or(source)
                         };
-                        self.doc.rewrite_untracked(|project| {
+                        self.session.document_mut().rewrite_untracked(|project| {
                             crate::project_assets::rebase_project_links(
                                 project,
                                 Some(&directory),
@@ -829,7 +834,7 @@ impl App {
             });
         let lang = self.lang;
         let directory = self.project_dir();
-        self.doc.end_gesture();
+        self.session.document_mut().end_gesture();
         let applied = self.apply_with(&label, |project| {
             let automated;
             let project = if let Some(pass) = &automation {
@@ -1320,7 +1325,8 @@ mod tests {
         let lo = Tick(32);
         let hi = Tick(64);
         let range = komponist_model::TickRange::new(lo, hi);
-        app.doc
+        app.session
+            .document_mut()
             .apply("Set loop", |project| {
                 let project =
                     edits::set_project_prop(project, edits::ProjectProp::LoopRange(range))?;
@@ -1730,7 +1736,8 @@ mod tests {
         #[cfg(not(unix))]
         let linked_source = source.clone();
         let sampler = app
-            .doc
+            .session
+            .document_mut()
             .apply_with("Add a device with the live source", |project| {
                 let (project, track) = edits::add_track(
                     project,
@@ -1755,11 +1762,11 @@ mod tests {
                 Ok((project, device))
             })
             .unwrap();
-        assert!(app.doc.undo());
+        assert!(app.session.document_mut().undo());
         let project_file = root.join("Song.komponist");
         assert!(app.save_to(&project_file));
         assert!(source.is_file());
-        assert!(app.doc.redo());
+        assert!(app.session.document_mut().redo());
         let check_sample = |app: &App| {
             let (_, _, player) = app.project().find_device(sampler).unwrap();
             player.asset_links[&0].clone()
@@ -1901,7 +1908,8 @@ mod tests {
 
     fn add_midi(app: &mut App) -> TrackId {
         let midi = app
-            .doc
+            .session
+            .document_mut()
             .apply_with("Add MIDI", |project| {
                 edits::add_track(
                     project,
@@ -1915,7 +1923,8 @@ mod tests {
                 )
             })
             .unwrap();
-        app.doc
+        app.session
+            .document_mut()
             .apply("Arm MIDI", |project| {
                 edits::set_track_prop(project, &[midi], edits::TrackProp::Arm(true))
             })
@@ -1970,7 +1979,8 @@ mod tests {
         let (root, mut app, audio) = rig();
         let midi = add_midi(&mut app);
         let range = TickRange::new(Tick::ZERO, Tick(1));
-        app.doc
+        app.session
+            .document_mut()
             .apply("Set a short loop", |project| {
                 let project =
                     edits::set_project_prop(project, edits::ProjectProp::LoopRange(range))?;
@@ -2047,7 +2057,8 @@ mod tests {
         // A hexa track, so a processor can panic; armed with the audio track.
         app.dispatch(Action::Edit(EditAction::NewMidiTrack));
         let midi = app.project().tracks.last().unwrap().id;
-        app.doc
+        app.session
+            .document_mut()
             .apply("Arm both", |project| {
                 edits::set_track_prop(project, &[audio, midi], edits::TrackProp::Arm(true))
             })
@@ -2066,22 +2077,23 @@ mod tests {
         assert!(app.recording.midi.is_some());
         let instrument = app.project().track(midi).unwrap().channel.devices[0].id;
         let slot = app
-            .engine
+            .session
+            .engine()
             .program()
             .unwrap()
             .slots
             .slot(instrument)
             .unwrap();
-        let at = app.engine.playhead();
-        app.engine.send(Command::InsertProcessor {
+        let at = app.session.engine().playhead();
+        app.session.engine_mut().send(Command::InsertProcessor {
             slot,
             processor: Box::new(komponist_engine::testing::TestPanic),
         });
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            app.engine.run_held(256, &[], 0);
+            app.session.engine_mut().run_held(256, &[], 0);
         }));
         assert!(caught.is_err(), "the processor ran");
-        app.engine.release_engine();
+        app.session.engine_mut().release_engine();
         wait(&mut app, |app| !app.recording.audio.is_active());
         assert!(app.recording.midi.is_none());
         let midi_clip = &app.project().track(midi).unwrap().clips[0];
@@ -2098,7 +2110,7 @@ mod tests {
         app.dispatch(Action::Edit(EditAction::Undo));
         assert!(app.project().track(midi).unwrap().clips.is_empty());
         assert!(app.project().track(audio).unwrap().clips.is_empty());
-        wait(&mut app, |app| app.engine.playhead() == at);
+        wait(&mut app, |app| app.session.engine().playhead() == at);
         assert_eq!(app.transport(), komponist_engine::TransportState::Stopped);
     }
 
@@ -2123,7 +2135,8 @@ mod tests {
         let midi = add_midi(&mut app);
         begin_mixed(&mut app);
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
-        app.doc
+        app.session
+            .document_mut()
             .apply("Remove MIDI", |project| {
                 edits::remove_tracks(project, &[midi])
             })
@@ -2147,7 +2160,8 @@ mod tests {
         begin(&mut app, track);
         // The project got its folder while the take was running in the provisional folder.
         let project_file = root.join("Song.komponist");
-        app.project_path = Some(project_file.clone());
+        app.session
+            .accept_saved_project(app.session.document().clone(), project_file.clone());
         let (release, go) = mpsc::channel();
         let (finished, _) = mpsc::channel();
         app.recording.audio.stage_gate = Some(StageGate {
@@ -2243,7 +2257,8 @@ mod tests {
     fn a_take_discarded_during_its_copy_leaves_no_copies() {
         let (root, mut app, track) = rig();
         begin(&mut app, track);
-        app.project_path = Some(root.join("Song.komponist"));
+        app.session
+            .accept_saved_project(app.session.document().clone(), root.join("Song.komponist"));
         let (release, go) = mpsc::channel::<()>();
         let (finished, done) = mpsc::channel();
         app.recording.audio.stage_gate = Some(StageGate {
@@ -2273,7 +2288,8 @@ mod tests {
     /// steps until the worker has made its private copy and waits for `release`. `finished`
     /// reports the worker's end.
     fn staging_held(app: &mut App, root: &Path) -> (mpsc::Sender<()>, mpsc::Receiver<()>) {
-        app.project_path = Some(root.join("Song.komponist"));
+        app.session
+            .accept_saved_project(app.session.document().clone(), root.join("Song.komponist"));
         let (release, go) = mpsc::channel::<()>();
         let (finished, done) = mpsc::channel();
         let (ready, waiting) = mpsc::channel();
@@ -2364,7 +2380,8 @@ mod tests {
         let (root, mut app, track) = rig();
         begin(&mut app, track);
         std::fs::write(root.join("Takes"), b"not a folder").unwrap();
-        app.project_path = Some(root.join("Song.komponist"));
+        app.session
+            .accept_saved_project(app.session.document().clone(), root.join("Song.komponist"));
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
         wait(&mut app, |app| !app.recording.audio.is_active());
@@ -2417,7 +2434,8 @@ mod tests {
         begin(&mut app, track);
         let takes = root.join("Takes");
         std::fs::write(&takes, b"not a folder").unwrap();
-        app.project_path = Some(root.join("Song.komponist"));
+        app.session
+            .accept_saved_project(app.session.document().clone(), root.join("Song.komponist"));
         app.dispatch(Action::Transport(TransportAction::ToggleRecord));
         assert!(app.engine_mut().run_held(256, &[], 0));
         wait(&mut app, |app| !app.recording.audio.is_active());
@@ -2445,7 +2463,8 @@ mod tests {
     fn a_writer_failure_on_the_blocking_path_keeps_the_last_finished_lap() {
         let (_root, mut app, track) = rig();
         let (lo, hi) = (Tick(32), Tick(64));
-        app.doc
+        app.session
+            .document_mut()
             .apply("Set loop", |project| {
                 let project = edits::set_project_prop(
                     project,
@@ -2513,7 +2532,8 @@ mod tests {
     fn laps_no_frame_saw_are_given_up_with_a_take_discarded_during_its_copy() {
         let (root, mut app, track) = rig();
         let (lo, hi) = (Tick(32), Tick(64));
-        app.doc
+        app.session
+            .document_mut()
             .apply("Set loop", |project| {
                 let project = edits::set_project_prop(
                     project,
@@ -2534,7 +2554,8 @@ mod tests {
                 .and_then(|view| view.progress(track))
                 .is_some_and(|progress| progress.frames > 0)
         });
-        app.project_path = Some(root.join("Song.komponist"));
+        app.session
+            .accept_saved_project(app.session.document().clone(), root.join("Song.komponist"));
         let (release, go) = mpsc::channel::<()>();
         let (finished, _done) = mpsc::channel();
         app.recording.audio.stage_gate = Some(StageGate {

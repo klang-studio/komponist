@@ -54,10 +54,7 @@ struct PadInput {
 impl App {
     /// The folder of the project file.
     pub(crate) fn project_dir(&self) -> Option<PathBuf> {
-        self.project_path
-            .as_deref()
-            .and_then(Path::parent)
-            .map(Path::to_path_buf)
+        self.session.project_dir().map(Path::to_path_buf)
     }
 
     /// Forgets the last hit of `device` so the next one counts as new.
@@ -154,7 +151,7 @@ impl App {
     }
 
     fn pad_inputs(&self) -> Vec<PadInput> {
-        let host = self.engine.host();
+        let host = self.session.engine().host();
         let project = self.project();
         let instruments = project.tracks.iter().flat_map(|track| {
             track.channel.devices.iter().filter_map(|device| {

@@ -62,7 +62,7 @@ impl App {
             self.lang,
             self.project(),
             &self.ui.plugin_windows,
-            self.engine.host().catalog(),
+            self.session.engine().host().catalog(),
         )
     }
 }

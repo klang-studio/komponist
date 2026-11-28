@@ -513,7 +513,7 @@ impl App {
         let p = self.project();
         match range {
             ExportRange::Song => {
-                let end = self.engine.program().map_or_else(
+                let end = self.session.engine().program().map_or_else(
                     || {
                         p.tracks
                             .iter()
@@ -536,8 +536,7 @@ impl App {
     /// project, a range that exists now (else the song).
     pub(crate) fn export_dialog_settings(&self) -> ExportSettings {
         let folder = self
-            .project_path
-            .as_deref()
+            .project_path()
             .and_then(Path::parent)
             .map(Path::to_path_buf)
             .or_else(crate::dirs::start_dir)
@@ -597,7 +596,7 @@ impl App {
             return;
         }
         // The program must be the document's for the song end and the render.
-        self.engine.sync(&self.doc);
+        self.session.sync_committed();
         let Some(file) = view::file_name(&settings.file_name) else {
             return;
         };
@@ -605,7 +604,7 @@ impl App {
             self.set_status(self.lang.export_empty(), StatusKind::Error);
             return;
         };
-        let Some(program) = self.engine.program() else {
+        let Some(program) = self.session.engine().program() else {
             return;
         };
         let rate = settings.sample_rate;
@@ -641,7 +640,7 @@ impl App {
 
     /// A linked sample that cannot be played, with the device and sample named for the user.
     fn unavailable_render_audio_asset(&self, id: DeviceId) -> Option<String> {
-        let host = self.engine.host();
+        let host = self.session.engine().host();
         let (_, _, device) = self.project().find_device(id)?;
         let assets = host.asset_slots(id)?;
         let (slot, link) = assets
@@ -696,8 +695,8 @@ impl App {
         let mut rows = Vec::new();
         for (track, devices) in chains {
             for d in devices.iter().filter(|device| !device.bypass) {
-                let state = match self.engine.device_status(d.id) {
-                    DeviceStatus::Ok if self.engine.host().render_assets_pending(d) => {
+                let state = match self.session.engine().device_status(d.id) {
+                    DeviceStatus::Ok if self.session.engine().host().render_assets_pending(d) => {
                         DeviceState::Loading
                     }
                     DeviceStatus::Ok => continue,
@@ -825,12 +824,12 @@ impl App {
             self.flatten_failed(error);
             return;
         }
-        self.engine.sync(&self.doc);
-        let Some(program) = self.engine.program().cloned() else {
+        self.session.sync_committed();
+        let Some(program) = self.session.engine().program().cloned() else {
             fail(self, &self.lang.flatten_worker_failed());
             return;
         };
-        run.diagnostics = self.engine.diagnostics().to_vec();
+        run.diagnostics = self.session.engine().diagnostics().to_vec();
         run.offline_devices = self
             .project()
             .tracks
@@ -843,15 +842,19 @@ impl App {
                         .flatten
                         .as_ref()
                         .is_none_or(|flatten| flatten.scope.devices().any(|id| id == device.id))
-                    && self.engine.host().status(device.id) == DeviceStatus::Ok
-                    && self.engine.host().supports_offline_preparation(device.id)
+                    && self.session.engine().host().status(device.id) == DeviceStatus::Ok
+                    && self
+                        .session
+                        .engine()
+                        .host()
+                        .supports_offline_preparation(device.id)
             })
             .map(|device| device.id)
             .collect();
         let offline_request = self
             .export
-            .offline_request(job.sample_rate, self.doc.project().tempo.bpm);
-        let project = Arc::clone(self.doc.project());
+            .offline_request(job.sample_rate, self.session.document().project().tempo.bpm);
+        let project = Arc::clone(self.session.document().project());
         let track = run
             .flatten
             .as_ref()
@@ -884,17 +887,17 @@ impl App {
                 return;
             }
         };
-        let detached = match self.engine.detach() {
+        let detached = match self.session.engine_mut().detach() {
             Ok(d) => d,
             Err(e) => {
                 fail(self, &e);
                 return;
             }
         };
-        run.set_render_mode(self.engine.host_mut(), RenderMode::Offline);
+        run.set_render_mode(self.session.engine_mut().host_mut(), RenderMode::Offline);
         if let Err(error) = send_engine.send(detached) {
-            run.set_render_mode(self.engine.host_mut(), RenderMode::Realtime);
-            self.engine.attach(error.0);
+            run.set_render_mode(self.session.engine_mut().host_mut(), RenderMode::Realtime);
+            self.session.engine_mut().attach(error.0);
             fail(self, &self.lang.flatten_worker_failed());
             return;
         }
@@ -989,7 +992,7 @@ impl App {
         if worker.go.is_none() || offline_devices.is_empty() {
             return Some(Ok(()));
         }
-        let host = self.engine.host_mut();
+        let host = self.session.engine_mut().host_mut();
         for &device in offline_devices.iter() {
             match host.status(device) {
                 DeviceStatus::Ok => {}
@@ -1042,9 +1045,9 @@ impl App {
         {
             let _ = thread.join();
         }
-        run.set_render_mode(self.engine.host_mut(), RenderMode::Realtime);
-        self.engine.recover(engine);
-        let _ = self.engine.take_rebuild_notice();
+        run.set_render_mode(self.session.engine_mut().host_mut(), RenderMode::Realtime);
+        self.session.engine_mut().recover(engine);
+        let _ = self.session.engine_mut().take_rebuild_notice();
         self.export.take_failures();
         self.dialogs.after_flatten = None;
         self.close_export_dialog();
@@ -1094,8 +1097,8 @@ impl App {
                 .and_then(|flatten| flatten.unavailable(self))
                 .map_or(Ok(report), |(id, _)| Err(ExportError::DeviceFailed(id)))
         });
-        run.set_render_mode(self.engine.host_mut(), RenderMode::Realtime);
-        self.engine.attach(engine);
+        run.set_render_mode(self.session.engine_mut().host_mut(), RenderMode::Realtime);
+        self.session.engine_mut().attach(engine);
         self.export.collect_failures(failed);
         self.drain_events();
         let failed = self.export.take_failures();
@@ -1175,7 +1178,7 @@ impl App {
 
     /// The plugin names of the devices in `slots`, without repeats.
     fn dropped_devices(&self, slots: Vec<SlotId>) -> Vec<String> {
-        let Some(program) = self.engine.program() else {
+        let Some(program) = self.session.engine().program() else {
             return Vec::new();
         };
         let mut names: Vec<String> = Vec::new();
@@ -1259,7 +1262,7 @@ impl App {
             .export_ticks(s.range)
             .unwrap_or(TickRange::new(Tick::ZERO, Tick::ZERO));
         let rate = s.sample_rate.max(1);
-        let length = match self.engine.program() {
+        let length = match self.session.engine().program() {
             Some(program) => {
                 let frames = ExportJob::frames_of(&program.tempo_map, ticks, rate);
                 (frames.end - frames.start) as f64 / f64::from(rate)

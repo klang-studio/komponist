@@ -57,7 +57,7 @@ impl App {
         }
         let mut state = new_track::State::new(None);
         state.kind = new_track::KIND_AUDIO;
-        state.choose_default_input(self.project(), &self.engine);
+        state.choose_default_input(self.project(), self.session.engine());
         self.open_overlay(crate::dialogs::Overlay::NewTrack(state));
     }
 
@@ -109,12 +109,12 @@ impl App {
         let at = if target.is_some() {
             if self.ui.arrangement.snap {
                 snap_tick(
-                    self.engine.playhead(),
+                    self.session.engine().playhead(),
                     self.ui.arrangement.grid.ticks(self.project().meter),
                     true,
                 )
             } else {
-                self.engine.playhead().max(Tick::ZERO)
+                self.session.engine().playhead().max(Tick::ZERO)
             }
         } else {
             Tick::ZERO

@@ -550,7 +550,7 @@ impl crate::App {
         let opening = !self.dialogs.settings.open;
         if opening {
             self.dialogs.settings.scroll_to.get_or_insert(section);
-            self.engine.scan_midi();
+            self.session.engine_mut().scan_midi();
         }
         self.dialogs.settings.open = true;
         let audio = self
@@ -559,7 +559,7 @@ impl crate::App {
         let cache = &mut self.dialogs.settings;
         let t = self.lang;
         let (devices, device) = device_entries(t, config.host, &audio.devices, &config);
-        let running = match self.engine.audio_state() {
+        let running = match self.session.engine().audio_state() {
             komponist_audio::AudioState::Running { config, .. } => Some(config.clone()),
             _ => None,
         };
@@ -576,7 +576,7 @@ impl crate::App {
             &devices[device],
             running.as_ref(),
         );
-        let (no_device, latency) = match self.engine.audio_state() {
+        let (no_device, latency) = match self.session.engine().audio_state() {
             komponist_audio::AudioState::NoDevice { reason, .. } => (
                 Some(reason.clone()),
                 format::latency(t, config.buffer_frames, config.sample_rate, Duration::ZERO),
@@ -601,7 +601,7 @@ impl crate::App {
             ),
         };
         let now = Instant::now();
-        let midi = self.engine.midi().map(|hub| {
+        let midi = self.session.engine().midi().map(|hub| {
             let ports = hub.ports();
             let all: Vec<&str> = ports.iter().map(|p| p.name.as_str()).collect();
             ports
@@ -616,7 +616,7 @@ impl crate::App {
                 })
                 .collect()
         });
-        let host = self.engine.host();
+        let host = self.session.engine().host();
         let (input_devices, input_device) =
             input_entries(t, &audio.inputs, self.settings.audio_input.as_ref());
         Model {
@@ -628,7 +628,7 @@ impl crate::App {
                 .devices_error
                 .clone()
                 .or_else(|| audio.inputs_error.clone()),
-            jack_playback_connections: self.engine.jack_playback_connections(),
+            jack_playback_connections: self.session.engine().jack_playback_connections(),
             capture_format: self.settings.capture_format,
             section,
             hosts: audio.hosts.clone(),
@@ -639,7 +639,7 @@ impl crate::App {
             no_device,
             buffer,
             latency,
-            realtime_denied: self.engine.stats().realtime_denied(),
+            realtime_denied: self.session.engine().stats().realtime_denied(),
             midi,
             dirs: cache
                 .plugin_rows

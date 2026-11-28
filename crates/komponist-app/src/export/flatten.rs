@@ -55,7 +55,7 @@ impl Asset {
 impl Flatten {
     pub(super) fn prepare(&mut self, app: &mut App) -> Result<(), String> {
         let changed = || app.lang.flatten_track_changed().to_owned();
-        let project = Arc::clone(app.doc.project());
+        let project = Arc::clone(app.session.document().project());
         let track = project.track(self.id).ok_or_else(changed)?;
         edits::validate_flatten_automation(track)
             .map_err(|_| app.lang.flatten_automation_too_large().to_owned())?;
@@ -74,7 +74,8 @@ impl Flatten {
             .map(|device| device.id)
             .collect();
         self.snapshots = app
-            .engine
+            .session
+            .engine_mut()
             .host_mut()
             .snapshot_selected_states(&ids, SNAPSHOT_TIMEOUT)
             .map_err(|id| app.lang.flatten_state_failed(app.device_name(id)))?;
@@ -86,7 +87,7 @@ impl Flatten {
         self.scope
             .devices()
             .filter_map(|id| {
-                let host = app.engine.host();
+                let host = app.session.engine().host();
                 match host.status(id) {
                     DeviceStatus::Ok
                         if app
@@ -166,7 +167,7 @@ impl Flatten {
         };
         let label = "undo-flatten-track";
         let start = self.scope.range().start;
-        let before = Arc::clone(app.doc.project());
+        let before = Arc::clone(app.session.document().project());
         let mut restored = Project::clone(&before);
         for (device, state) in self.snapshots {
             match edits::set_saved_plugin_state(&restored, device, &state) {
@@ -178,7 +179,7 @@ impl Flatten {
             }
         }
         // An in-flight gesture belongs to its own edit. Install the flattened track in one step.
-        app.doc.end_gesture();
+        app.session.document_mut().end_gesture();
         let Some(clip) = app.apply_with(label, |project| {
             edits::flatten_midi_track(project, self.id, start, file)
         }) else {
@@ -188,7 +189,7 @@ impl Flatten {
         if restored != *before {
             // Enrich only the state this undo step restores. Earlier parameter edits keep their
             // own snapshots, and a render failure never changes the document or its history.
-            app.doc.rewrite_untracked(|project| {
+            app.session.document_mut().rewrite_untracked(|project| {
                 std::ptr::eq(project, before.as_ref()).then(|| restored.clone())
             });
         }
@@ -224,7 +225,7 @@ impl App {
         if !self.stop_for_export() {
             return;
         }
-        self.engine.sync(&self.doc);
+        self.session.sync_committed();
         let scope = match TrackExport::new(self.project(), id) {
             Ok(scope) => Arc::new(scope),
             Err(error) => {
@@ -236,7 +237,7 @@ impl App {
             return;
         };
         let name = track.name.clone();
-        let rate = self.engine.sample_rate();
+        let rate = self.session.engine().sample_rate();
         let range = ExportJob::frames_of(&self.project().tempo_map(), scope.range(), rate);
         if range.is_empty() {
             self.flatten_error(ExportError::InvalidTrack);

@@ -15,8 +15,8 @@ impl App {
     pub(crate) fn collect_and_save(&mut self) {
         // A recovered copy whose file is gone has no file to collect next to (as Ctrl S).
         let file = self
-            .project_path
-            .clone()
+            .project_path()
+            .map(Path::to_path_buf)
             .filter(|_| !self.recovery_ui.save_asks);
         let Some(file) = file else {
             // The folder of the samples depends on the file: ask for it, then collect.

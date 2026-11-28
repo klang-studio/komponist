@@ -77,6 +77,7 @@ use crate::ui_state::{
 };
 use crate::views::{Requests, Views};
 use crate::windows::plugin_frame::{self, PluginFrames};
+use komponist_session::Session;
 use komponist_session::device_host::{DeviceHost, PluginHost};
 use komponist_session::engine_sync::{EngineSync, MidiChange};
 
@@ -110,15 +111,13 @@ const RT_LOG_PREFIX: &str = "RT priority:";
 
 /// The application.
 pub struct App {
-    pub(crate) doc: Document,
+    pub(crate) session: Session,
     pub(crate) ui: UiState,
-    pub(crate) engine: EngineSync,
     pub(crate) views: Views,
     pub(crate) keymap: Keymap,
     pub(crate) meters: Meters,
     pub(crate) settings: Settings,
     settings_path: Option<PathBuf>,
-    pub(crate) project_path: Option<PathBuf>,
     /// Actions queued by the shell and the views during this frame.
     pub(crate) queue: Vec<Action>,
     log: VecDeque<Action>,
@@ -227,15 +226,13 @@ impl App {
             None => RecentList::default(),
         };
         App {
-            doc,
+            session: Session::new(doc, engine),
             ui,
-            engine,
             views: Views::new(),
             keymap: Keymap::default_bindings(),
             meters: Meters::new(),
             settings,
             settings_path,
-            project_path: None,
             queue: Vec::new(),
             log: VecDeque::new(),
             shell: ShellState {
@@ -319,7 +316,7 @@ impl App {
     /// Replaces the device host (`main` plugs in [`komponist_session::device_host::PluginHost`]; tests may
     /// too). The next sync creates every processor through the new host.
     pub fn with_device_host(mut self, host: Box<dyn DeviceHost>) -> App {
-        self.engine.set_host(host);
+        self.session.set_device_host(host);
         self
     }
 
@@ -331,12 +328,12 @@ impl App {
 
     /// The document.
     pub fn doc(&self) -> &Document {
-        &self.doc
+        self.session.document()
     }
 
     /// The current project.
     pub fn project(&self) -> &Arc<Project> {
-        self.doc.project()
+        self.session.document().project()
     }
 
     /// The view state.
@@ -351,12 +348,12 @@ impl App {
 
     /// The engine sync (telemetry, device status, audio state).
     pub fn engine(&self) -> &EngineSync {
-        &self.engine
+        self.session.engine()
     }
 
     /// The engine sync, mutable.
     pub fn engine_mut(&mut self) -> &mut EngineSync {
-        &mut self.engine
+        self.session.engine_mut()
     }
 
     /// The shortcut table.
@@ -376,7 +373,7 @@ impl App {
 
     /// The file the project was opened from or saved to.
     pub fn project_path(&self) -> Option<&Path> {
-        self.project_path.as_deref()
+        self.session.project_path()
     }
 
     /// The actions dispatched so far, oldest first (the last [`LOG_LIMIT`]).
@@ -401,12 +398,15 @@ impl App {
 
     /// Transport state from the engine (`Stopped` during an export).
     pub fn transport(&self) -> TransportState {
-        self.engine.transport()
+        self.session.engine().transport()
     }
 
     /// Whether play and record are possible (an audio device or the null backend runs).
     pub fn audio_ok(&self) -> bool {
-        !matches!(self.engine.audio_state(), AudioState::NoDevice { .. })
+        !matches!(
+            self.session.engine().audio_state(),
+            AudioState::NoDevice { .. }
+        )
     }
 
     /// Shows a message in the status bar.
@@ -490,10 +490,12 @@ impl App {
     /// syncs left out something new: every left-out track and device, counted per reason
     /// ([`crate::diagnostics::summary`]).
     pub fn report_compile_diagnostics(&mut self) {
-        if !self.engine.take_diagnostics_notice() {
+        if !self.session.engine_mut().take_diagnostics_notice() {
             return;
         }
-        if let Some(text) = crate::diagnostics::summary(self.lang, self.engine.diagnostics()) {
+        if let Some(text) =
+            crate::diagnostics::summary(self.lang, self.session.engine().diagnostics())
+        {
             self.set_status(text, StatusKind::Error);
         }
     }
@@ -502,12 +504,13 @@ impl App {
     /// (`EngineSync::take_midi_changes`), by the name S07 shows. Several changes make one
     /// message, joined by " · ".
     pub fn report_midi_changes(&mut self) {
-        let changes = self.engine.take_midi_changes();
+        let changes = self.session.engine_mut().take_midi_changes();
         if changes.is_empty() {
             return;
         }
         let ports = self
-            .engine
+            .session
+            .engine()
             .midi()
             .map(|hub| hub.ports())
             .unwrap_or_default();
@@ -538,13 +541,12 @@ impl App {
     /// plugin it finds load when it finishes.
     pub fn scan_plugins(&mut self) {
         let dirs = self.settings.plugin_dirs();
-        self.engine.host_mut().start_scan(&dirs);
+        self.session.engine_mut().host_mut().start_scan(&dirs);
     }
 
     /// Publish the revision of the document and any automation that is still being captured.
     pub(crate) fn sync_project(&mut self) {
-        self.engine
-            .sync_with_draft(&self.doc, self.recording.draft());
+        self.session.sync(self.recording.draft());
     }
 
     /// One frame without a window (tests, headless tools): engine and device host events, queued
@@ -636,8 +638,8 @@ impl App {
     fn poll_engine(&mut self, now: f64) {
         self.poll_events();
         // The meters do not show an export's render.
-        if !self.engine.is_detached() {
-            self.meters.update(&self.engine, now);
+        if !self.session.engine().is_detached() {
+            self.meters.update(self.session.engine(), now);
         }
     }
 
@@ -655,16 +657,16 @@ impl App {
     }
 
     fn drain_events_with_automation(&mut self, capture: bool) {
-        let events = self.engine.poll_engine_events();
+        let events = self.session.engine_mut().poll_engine_events();
         // Only a device stream can drop out; on the null backend (tests, `--null-audio`, CI runners
         // without RTKit) the missing priority is not worth a notice.
         let device_stream = matches!(
-            self.engine.audio_state(),
+            self.session.engine().audio_state(),
             AudioState::Running { config, .. } if config.host != komponist_audio::HostKind::Null
         );
-        let rebuilt = self.engine.take_rebuild_notice();
-        let no_realtime = self.engine.take_worker_notice();
-        let no_workgroup = self.engine.take_workgroup_notice();
+        let rebuilt = self.session.engine_mut().take_rebuild_notice();
+        let no_realtime = self.session.engine().take_worker_notice();
+        let no_workgroup = self.session.engine().take_workgroup_notice();
         // One message per frame; a rebuilt engine is the worst news (reported last, below, so no
         // other message of this drain replaces it), then a missing priority.
         let error_shown = matches!(&self.ui.status, Some(s) if s.kind == StatusKind::Error);
@@ -681,7 +683,7 @@ impl App {
         }
         self.report_midi_changes();
         self.report_compile_diagnostics();
-        let playhead = self.engine.playhead();
+        let playhead = self.session.engine().playhead();
         for event in events {
             if let EngineEvent::PluginParams {
                 slot,
@@ -698,7 +700,7 @@ impl App {
         // After the old engine's last events: the take they belong to ends at the crash.
         let kept_take = rebuilt.is_some_and(|at| self.end_take_after_rebuild(at));
         let mut recompile = false;
-        for event in self.engine.poll_device_events() {
+        for event in self.session.engine_mut().poll_device_events() {
             recompile |= matches!(
                 event,
                 PluginManagerEvent::LatencyChanged { .. }
@@ -719,7 +721,7 @@ impl App {
         self.update_audio_take();
         if recompile {
             // Delay compensation follows the new latencies; the slots stay as they are.
-            self.engine.invalidate_project();
+            self.session.engine_mut().invalidate_project();
             self.sync_project();
         }
         self.flush_deferred();
@@ -751,7 +753,7 @@ impl App {
                     at,
                     first_incomplete_lap,
                     triggering_track,
-                    self.doc.project(),
+                    self.session.document().project(),
                     self.lang,
                 ) {
                     self.finish_take_at(at);
@@ -760,7 +762,9 @@ impl App {
             }
             // A device that dropped out of an export's render (its status says the rest).
             EngineEvent::ProcessorFailed { slot } => self.export.processor_failed(slot),
-            _ => self.recording.handle_midi(event, self.doc.project()),
+            _ => self
+                .recording
+                .handle_midi(event, self.session.document().project()),
         }
     }
 
@@ -771,7 +775,8 @@ impl App {
         if self.recording.midi().is_some() {
             self.finish_take();
         }
-        self.recording.start_midi(self.doc.project(), at, self.lang);
+        self.recording
+            .start_midi(self.session.document().project(), at, self.lang);
         self.set_dock_tab(DockTab::Editor);
         if self.ui.dialog.is_none() {
             self.ui.focus = self.live_editor_area().unwrap_or(FocusArea::PianoRoll);
@@ -785,11 +790,13 @@ impl App {
         let capturing_notes_or_audio = self.recording.capturing_notes_or_audio();
         let capturing_automation = self.recording.automation().active();
         if capturing_notes_or_audio || capturing_automation {
-            self.engine.send(Command::FinishAutomationWrite);
+            self.session
+                .engine_mut()
+                .send(Command::FinishAutomationWrite);
             self.finish_take();
         }
         if capturing_notes_or_audio {
-            self.engine.send(Command::StopRecording);
+            self.session.engine_mut().send(Command::StopRecording);
         }
     }
 
@@ -851,11 +858,13 @@ impl App {
 
     /// Commits the running take from the already-drained events.
     pub(crate) fn finish_take(&mut self) {
-        self.finish_take_at(self.engine.playhead());
+        self.finish_take_at(self.session.engine().playhead());
     }
 
     fn finish_take_at(&mut self, at: Tick) {
-        let commit = self.recording.finish_midi(self.doc.project(), at);
+        let commit = self
+            .recording
+            .finish_midi(self.session.document().project(), at);
         let automation = self.take_automation_capture();
         if self.recording.audio_active() {
             self.recording.finish_with_audio(commit, automation);
@@ -869,7 +878,7 @@ impl App {
             return;
         };
         // The take is an undo step of its own, also in the middle of a drag.
-        self.doc.end_gesture();
+        self.session.document_mut().end_gesture();
         let label = commit.label().to_owned();
         let Some(clips) = self.apply_with(&label, |p| {
             let project = automation.apply(p)?;
@@ -894,9 +903,11 @@ impl App {
         self.clear_automation_capture();
         self.sync_project();
         // The engine cancels against the committed curves so it can restore an undriven base.
-        self.engine.send(Command::CancelAutomationWrite);
+        self.session
+            .engine_mut()
+            .send(Command::CancelAutomationWrite);
         self.drain_events_with_automation(false);
-        self.engine.send(Command::StopRecording);
+        self.session.engine_mut().send(Command::StopRecording);
     }
 
     /// The app's part of a device host event (module docs).
@@ -1050,11 +1061,12 @@ impl App {
     /// every device whose state changed is brought in sync with the running processor (`EngineSync::sync_device_states`), since
     /// a state change is not otherwise sent to the engine.
     pub(crate) fn follow_device_states(&mut self, before: &Arc<Project>) {
-        let after = Arc::clone(self.doc.project());
+        let after = Arc::clone(self.session.document().project());
         if Arc::ptr_eq(before, &after) {
             return;
         }
-        self.engine
+        self.session
+            .engine_mut()
             .sync_device_states(before, &after, &self.param_undo.baseline);
         self.expect_echo(before, &after);
         self.release_keyboard_notes_if(|id| after.track(id).is_none());
@@ -1062,7 +1074,7 @@ impl App {
 
     /// Apply changes in catalog availability without replacing the project's saved devices.
     fn sync_catalog_devices(&mut self) -> bool {
-        let host = self.engine.host();
+        let host = self.session.engine().host();
         let changes: Vec<_> = self
             .project()
             .tracks
@@ -1090,7 +1102,8 @@ impl App {
         } = if removed.is_empty() {
             SaveSnapshots::default()
         } else {
-            self.engine
+            self.session
+                .engine_mut()
                 .host_mut()
                 .snapshot_available_states(&removed, SNAPSHOT_TIMEOUT)
         };
@@ -1102,15 +1115,18 @@ impl App {
         for (device, available) in changes {
             if (blocked.contains(&device) || unavailable.contains(&device))
                 && matches!(
-                    self.engine.host().status(device),
+                    self.session.engine().host().status(device),
                     DeviceStatus::Ok | DeviceStatus::Loading
                 )
             {
                 self.shell.catalog_retirements.insert(device, None);
-                self.engine.host_mut().schedule_retiring_snapshot(device);
+                self.session
+                    .engine_mut()
+                    .host_mut()
+                    .schedule_retiring_snapshot(device);
                 continue;
             }
-            self.engine.reload_device(&project, device);
+            self.session.engine_mut().reload_device(&project, device);
             newly_missing |= !available;
         }
         self.refresh_missing_plugin_dialogs();
@@ -1131,7 +1147,7 @@ impl App {
             let Some((_, _, entry)) = self.project().find_device(device) else {
                 return false;
             };
-            let host = self.engine.host();
+            let host = self.session.engine().host();
             if host.catalog().resolve(&entry.plugin).is_some() || host.device_probe_failed(device) {
                 if let Some(state) = captured.take() {
                     self.store_snapshot(device, &state);
@@ -1149,7 +1165,7 @@ impl App {
                 self.store_retiring_snapshot(device, &state);
             }
             let project = Arc::clone(self.project());
-            self.engine.reload_device(&project, device);
+            self.session.engine_mut().reload_device(&project, device);
             newly_missing = true;
             false
         });
@@ -1164,7 +1180,11 @@ impl App {
             .iter()
             .any(|dialog| matches!(dialog, Some(Dialog::MissingPlugins(_))))
         {
-            let missing = self.engine.host().missing_plugins(self.doc.project());
+            let missing = self
+                .session
+                .engine()
+                .host()
+                .missing_plugins(self.session.document().project());
             for dialog in [active, queued] {
                 if let Some(Dialog::MissingPlugins(plugins)) = dialog {
                     plugins.clone_from(&missing);
@@ -1180,7 +1200,7 @@ impl App {
             |(_, _, d)| {
                 crate::views::catalog_plugin_name(
                     self.lang,
-                    self.engine.host().catalog(),
+                    self.session.engine().host().catalog(),
                     &d.plugin,
                 )
             },
@@ -1192,7 +1212,7 @@ impl App {
     /// callback has usually taken it.
     fn install_midi_waker(&mut self, ctx: &Context) {
         let seen = Arc::new(AtomicBool::new(false));
-        if let Some(hub) = self.engine.midi() {
+        if let Some(hub) = self.session.engine().midi() {
             let (ctx, seen) = (ctx.clone(), Arc::clone(&seen));
             hub.set_waker(move || {
                 seen.store(true, Ordering::Relaxed);
@@ -1217,7 +1237,7 @@ impl App {
             .midi_seen
             .as_ref()
             .is_some_and(|seen| seen.swap(false, Ordering::Relaxed));
-        if midi || self.engine.telemetry().held_input_keys() != 0 {
+        if midi || self.session.engine().telemetry().held_input_keys() != 0 {
             ctx.request_repaint_after(HELD_KEYS_INTERVAL);
         }
         if let Some(status) = &self.ui.status {
@@ -1229,23 +1249,23 @@ impl App {
         let jack_routes = self.settings.audio.host == komponist_audio::HostKind::Jack
             && (!self.settings.audio.jack_routes.is_automatic()
                 || self.settings.audio_input.is_some());
-        if self.engine.host().needs_polling()
+        if self.session.engine().host().needs_polling()
             || jack_routes
             || !self.preset_preparations.is_empty()
             || self.user_presets.is_busy()
             || self.param_undo.has_pending_text()
         {
             ctx.request_repaint_after(DEVICE_POLL_INTERVAL);
-        } else if self.engine.audio_input_config().is_some()
+        } else if self.session.engine().audio_input_config().is_some()
             && matches!(
-                self.engine.audio_state(),
+                self.session.engine().audio_state(),
                 AudioState::Running { config, .. } if config.host != komponist_audio::HostKind::Null
             )
         {
             ctx.request_repaint_after(CAPTURE_POLL_INTERVAL);
         }
         // A frame now and then looks for MIDI devices that were plugged in meanwhile.
-        if self.engine.midi().is_some() {
+        if self.session.engine().midi().is_some() {
             ctx.request_repaint_after(komponist_session::engine_sync::MIDI_SCAN_INTERVAL);
         }
     }
@@ -1302,8 +1322,8 @@ impl App {
         self.persist_panel_layout(true);
         self.shutdown_plugin_frames();
         self.recording.shutdown();
-        self.engine.shutdown();
-        self.engine.host_mut().shutdown();
+        self.session.engine_mut().shutdown();
+        self.session.engine_mut().host_mut().shutdown();
     }
 
     // --------------------------------------------------------------------------------------------
@@ -1453,7 +1473,7 @@ impl App {
             {
                 Action::Transport(TransportAction::DiscardTake)
             }
-            Action::Ui(UiAction::ClearSelection) if self.doc.in_gesture() => {
+            Action::Ui(UiAction::ClearSelection) if self.session.document().in_gesture() => {
                 Action::Edit(EditAction::CancelGesture)
             }
             Action::Ui(UiAction::ClearSelection) if self.ui.track_macros.mapping.is_some() => {
@@ -1501,7 +1521,7 @@ impl App {
             let (_, key, track) = self.shell.held_notes[index];
             if release(track) {
                 self.shell.held_notes.remove(index);
-                self.engine.send(Command::LiveNote {
+                self.session.engine_mut().send(Command::LiveNote {
                     track,
                     key,
                     velocity: 0,
@@ -1564,7 +1584,7 @@ impl App {
                 if self.apply("undo-automation-shown", |p| {
                     automation::set_shown(p, owner, shown)
                 }) && shown
-                    && let Some(automation) = lanes(self.doc.project(), owner)
+                    && let Some(automation) = lanes(self.session.document().project(), owner)
                 {
                     for lane in &automation.lanes {
                         self.ui.hidden_automation_lanes.remove(&lane.id);
@@ -1687,7 +1707,7 @@ impl App {
         if !self.recording.wait_for_automation_stop() {
             self.finish_take();
         }
-        self.engine.send(Command::Stop);
+        self.session.engine_mut().send(Command::Stop);
     }
 
     fn transport_action(&mut self, action: TransportAction) {
@@ -1706,7 +1726,7 @@ impl App {
                     // of the frame. Otherwise playback can start with the old loop and pass the
                     // new loop end before the program arrives, and then it never wraps.
                     self.sync_project();
-                    self.engine.send(Command::Play);
+                    self.session.engine_mut().send(Command::Play);
                 }
             }
             TransportAction::Stop => {
@@ -1716,8 +1736,8 @@ impl App {
                     // Stop while stopped: the hard cut (tails end at once), then back to the
                     // start.
                     let start = self.start_tick();
-                    self.engine.send(Command::Stop);
-                    self.engine.send(Command::Locate(start));
+                    self.session.engine_mut().send(Command::Stop);
+                    self.session.engine_mut().send(Command::Locate(start));
                 }
             }
             TransportAction::ToggleRecord => self.toggle_record(),
@@ -1740,10 +1760,12 @@ impl App {
             }
             TransportAction::GoToStart => {
                 let start = self.start_tick();
-                self.engine.send(Command::Locate(start));
+                self.session.engine_mut().send(Command::Locate(start));
             }
             TransportAction::Locate(tick) => {
-                self.engine.send(Command::Locate(tick.max(Tick::ZERO)));
+                self.session
+                    .engine_mut()
+                    .send(Command::Locate(tick.max(Tick::ZERO)));
             }
             TransportAction::SetLoopRange(range) => {
                 self.untracked(ProjectProp::LoopRange(range));
@@ -1755,7 +1777,7 @@ impl App {
                 velocity,
             } => {
                 if let Some(track) = track.or_else(|| self.live_track()) {
-                    self.engine.send(Command::LiveNote {
+                    self.session.engine_mut().send(Command::LiveNote {
                         track,
                         key,
                         velocity,
@@ -1813,7 +1835,7 @@ impl App {
                 }
                 let meter = self.project().meter;
                 let bar = meter.ticks_per_bar();
-                let at = self.engine.playhead().0.max(0);
+                let at = self.session.engine().playhead().0.max(0);
                 let from = if state == TransportState::Stopped {
                     Tick(at.div_euclid(bar) * bar)
                 } else {
@@ -1826,7 +1848,7 @@ impl App {
                     return;
                 }
                 self.recording.expect_take(from);
-                self.engine.send(Command::Record { from });
+                self.session.engine_mut().send(Command::Record { from });
             }
         }
     }
@@ -1838,16 +1860,17 @@ impl App {
         // Ignore a count-in completion or capture interruption that arrived since the last poll.
         let from = self.recording.cancel_take();
         self.drain_events();
-        self.engine.send(Command::Stop);
+        self.session.engine_mut().send(Command::Stop);
         if let Some(from) = from {
-            self.engine.send(Command::Locate(from));
+            self.session.engine_mut().send(Command::Locate(from));
         }
     }
 
     /// Applies a transport setting outside the history (`Document::apply_untracked`).
     pub(crate) fn untracked(&mut self, prop: ProjectProp) {
         if let Err(e) = self
-            .doc
+            .session
+            .document_mut()
             .apply_untracked(|p| edits::set_project_prop(p, prop.clone()))
         {
             self.record_edit_error(e);
@@ -1890,8 +1913,8 @@ impl App {
 
     /// Applies `edit` as an undo step `label` (or inside the open gesture); records a failure.
     fn apply(&mut self, label: &str, edit: impl FnOnce(&Project) -> EditResult) -> bool {
-        let before = Arc::clone(self.doc.project());
-        match self.doc.apply(label, edit) {
+        let before = Arc::clone(self.session.document().project());
+        match self.session.document_mut().apply(label, edit) {
             Ok(()) => {
                 self.follow_device_states(&before);
                 true
@@ -1909,8 +1932,8 @@ impl App {
         label: &str,
         edit: impl FnOnce(&Project) -> Result<(Project, T), EditError>,
     ) -> Option<T> {
-        let before = Arc::clone(self.doc.project());
-        match self.doc.apply_with(label, edit) {
+        let before = Arc::clone(self.session.document().project());
+        match self.session.document_mut().apply_with(label, edit) {
             Ok(v) => {
                 self.follow_device_states(&before);
                 Some(v)
@@ -1929,11 +1952,11 @@ impl App {
         label: &str,
         edit: impl FnOnce(&Project) -> Result<(Project, T), EditError>,
     ) -> Option<T> {
-        let before = Arc::clone(self.doc.project());
-        let result = if self.doc.in_gesture() {
-            self.doc.apply_in_gesture_with(edit)
+        let before = Arc::clone(self.session.document().project());
+        let result = if self.session.document().in_gesture() {
+            self.session.document_mut().apply_in_gesture_with(edit)
         } else {
-            self.doc.apply_with(label, edit)
+            self.session.document_mut().apply_with(label, edit)
         };
         match result {
             Ok(v) => {
@@ -1992,7 +2015,7 @@ impl App {
     fn new_midi_track(&mut self, index: Option<usize>, instrument: Option<PluginRef>) {
         let names = crate::dialogs::new_track::midi_names(
             self.lang,
-            self.engine.host().catalog(),
+            self.session.engine().host().catalog(),
             instrument.as_ref(),
         );
         let spec = NewTrack {
@@ -2027,7 +2050,7 @@ impl App {
         };
         let names = crate::dialogs::new_track::midi_names(
             self.lang,
-            self.engine.host().catalog(),
+            self.session.engine().host().catalog(),
             spec.instrument.as_ref(),
         );
         let made = self.apply_with(label, |p| {
@@ -2083,7 +2106,8 @@ impl App {
 
     fn defer_startup_track_action(&mut self, action: Action) -> bool {
         if !self
-            .engine
+            .session
+            .engine()
             .host()
             .awaiting_packaged_plugin(Self::DEFAULT_INSTRUMENT_ID)
         {
@@ -2099,7 +2123,8 @@ impl App {
             && self.ui.dialog.is_none()
             && self.dialogs.overlay.is_none()
             && !self
-                .engine
+                .session
+                .engine()
                 .host()
                 .awaiting_packaged_plugin(Self::DEFAULT_INSTRUMENT_ID)
         {
@@ -2115,7 +2140,7 @@ impl App {
     }
 
     fn default_instrument(&self) -> Option<PluginRef> {
-        let catalog = self.engine.host().catalog();
+        let catalog = self.session.engine().host().catalog();
         catalog
             .packaged(Self::DEFAULT_INSTRUMENT_ID)
             .map(|entry| entry.plugin.clone())
@@ -2126,7 +2151,7 @@ impl App {
         if self.ui.dialog.is_some() || self.dialogs.overlay.is_some() {
             return;
         }
-        let catalog = self.engine.host().catalog();
+        let catalog = self.session.engine().host().catalog();
         let instrument = match &self.dialogs.last_instrument {
             Some(None) => None,
             Some(Some(last)) => catalog
@@ -2143,7 +2168,7 @@ impl App {
             return;
         }
         let mut state = crate::dialogs::new_track::State::new(instrument);
-        state.choose_default_input(self.project(), &self.engine);
+        state.choose_default_input(self.project(), self.session.engine());
         self.open_overlay(crate::dialogs::Overlay::NewTrack(state));
     }
 
@@ -2387,7 +2412,7 @@ impl App {
                 }
                 self.select_clips(vec![clip], SelectMode::Replace);
                 self.set_dock_tab(DockTab::Editor);
-                self.ui.focus = self.ui.editor_area(self.doc.project());
+                self.ui.focus = self.ui.editor_area(self.session.document().project());
             }
             UiAction::FocusBrowserSearch => {
                 self.ui.layout.browser_open = true;
@@ -2544,7 +2569,7 @@ impl App {
         {
             area
         } else {
-            self.ui.dock_area(self.doc.project())
+            self.ui.dock_area(self.session.document().project())
         }
     }
 
@@ -2729,7 +2754,8 @@ impl App {
         match action {
             PluginAction::Add { plugin, target } => self.add_plugin(plugin, target),
             PluginAction::RequestWaveformMarkers { device, slot } => {
-                self.engine
+                self.session
+                    .engine_mut()
                     .host_mut()
                     .request_waveform_markers(device, slot);
             }
@@ -2739,7 +2765,8 @@ impl App {
                 request,
             } => {
                 if self
-                    .engine
+                    .session
+                    .engine_mut()
                     .host_mut()
                     .edit_waveform_markers(device, slot, request)
                     .is_err()
@@ -2750,7 +2777,12 @@ impl App {
             PluginAction::ApplyClapPreset { device, source } => {
                 if let Some((_, _, target)) = self.project().find_device(device) {
                     let target = Arc::clone(target);
-                    if !self.engine.host_mut().load_clap_preset(&target, &source) {
+                    if !self
+                        .session
+                        .engine_mut()
+                        .host_mut()
+                        .load_clap_preset(&target, &source)
+                    {
                         self.frame_preset_finished(device, false);
                         self.set_status(self.lang.devices_preset_load_failed(), StatusKind::Error);
                     }
@@ -2769,7 +2801,7 @@ impl App {
                 if !self.ui.plugin_windows.iter().any(|w| w.device == device) {
                     // The plugin's own GUI if it has one (the frame opens it, WP-50), else the
                     // generic parameter view.
-                    let view = if self.engine.host().has_gui(device) {
+                    let view = if self.session.engine().host().has_gui(device) {
                         PluginView::Gui
                     } else {
                         PluginView::Params
@@ -2793,7 +2825,7 @@ impl App {
                 self.param_undo.cancel_text_edits(device);
                 self.cancel_frame_preset_requests(device);
                 self.reset_pad_hit(device);
-                self.engine.reload_device(self.doc.project(), device);
+                self.session.reload_device(device);
             }
             PluginAction::PickPluginAsset { device, slot } => self.pick_plugin_asset(device, slot),
             PluginAction::SetPluginAsset { device, slot, path } => {
@@ -2845,7 +2877,7 @@ impl App {
     /// Browser double-click, Enter or drop. The role comes from the device host (built-ins are
     /// instruments; the plugin manager knows the rest).
     fn add_plugin(&mut self, plugin: PluginRef, target: DropTarget) {
-        let Some(role) = self.engine.host().role(&plugin) else {
+        let Some(role) = self.session.engine().host().role(&plugin) else {
             return;
         };
         let selected = self.ui.selection.tracks.iter().next().copied();
@@ -2970,14 +3002,10 @@ impl App {
         // while the project opens.
         self.recording.reset_take();
         self.clear_automation_capture();
-        self.engine.send(Command::CancelAutomationWrite);
-        self.engine.send(Command::Stop);
-        self.engine.send(Command::Locate(Tick::ZERO));
-        self.engine.reset();
+        self.session.replace_project(doc, path);
         // The old document's recovery copy goes; a recovered copy is adopted afterwards.
         self.recovery.document_replaced(None);
         self.recovery_ui.save_asks = false;
-        self.doc = doc;
         self.dialogs.repaired = 0;
         self.param_undo.forget();
         self.dialogs.after_param_text = None;
@@ -2987,11 +3015,6 @@ impl App {
         self.user_presets = Default::default();
         self.dialogs.samples.forget_device_state();
         self.dialogs.plugin_assets.forget_device_state();
-        self.project_path = path;
-        // Relative sample paths resolve against the project file's folder, before the devices of
-        // the project get their processors.
-        let dir = self.project_dir();
-        self.engine.host_mut().set_project_dir(dir);
         self.meters = Meters::new();
         self.export.forget();
         self.ui.selection = Default::default();
@@ -3013,7 +3036,7 @@ impl App {
     }
 
     fn persist_audio_input(&mut self, successful_choice: bool) {
-        let requested = self.engine.audio_input_config();
+        let requested = self.session.engine().audio_input_config();
         // A previous write may have failed after the in-memory preference changed.
         if successful_choice || self.settings.audio_input.as_ref() != requested {
             self.settings.audio_input = requested.cloned();
@@ -3030,11 +3053,11 @@ impl App {
     ) {
         use crate::views::audio_inputs::input_label;
 
-        let previous = self.engine.audio_input_config().cloned();
-        let problem = match set_input(&mut self.engine, Some(device)) {
+        let previous = self.session.engine().audio_input_config().cloned();
+        let problem = match set_input(self.session.engine_mut(), Some(device)) {
             Ok(())
                 if matches!(input, AudioInput::Hardware(hardware)
-                    if !self.engine.hardware_input_available(hardware)) =>
+                    if !self.session.engine().hardware_input_available(hardware)) =>
             {
                 let label = input_label(self.lang, self.project(), input);
                 Some(self.lang.audio_input_unavailable(label))
@@ -3048,16 +3071,19 @@ impl App {
                 return;
             }
             Err(error)
-                if self.engine.audio_input_error().is_some()
-                    || !matches!(self.engine.audio_state(), AudioState::NoDevice { .. }) =>
+                if self.session.engine().audio_input_error().is_some()
+                    || !matches!(
+                        self.session.engine().audio_state(),
+                        AudioState::NoDevice { .. }
+                    ) =>
             {
                 Some(self.lang.audio_input_open_failed(error))
             }
             Err(_) => None,
         };
 
-        if self.engine.audio_input_config() != previous.as_ref() {
-            let _ = set_input(&mut self.engine, previous);
+        if self.session.engine().audio_input_config() != previous.as_ref() {
+            let _ = set_input(self.session.engine_mut(), previous);
         }
         if let Some(problem) = problem {
             self.set_status(problem, StatusKind::Error);
@@ -3105,27 +3131,30 @@ impl App {
         }
         match action {
             SettingsAction::SetAudio(config) => {
-                let _ = self.engine.set_audio(&config);
+                let _ = self.session.engine_mut().set_audio(&config);
                 self.settings.audio = config;
                 self.save_settings();
             }
             SettingsAction::SetJackCaptureAutomatic => {
                 let input = Some(komponist_audio::InputConfig::default());
-                if let Err(error) = self.engine.set_audio_input(input.clone()) {
+                if let Err(error) = self.session.engine_mut().set_audio_input(input.clone()) {
                     self.set_status(self.lang.audio_input_open_failed(error), StatusKind::Error);
                     return;
                 }
                 self.settings.audio_input = input;
                 self.settings.audio.jack_routes.capture = None;
-                let _ = self.engine.set_audio(&self.settings.audio);
+                let _ = self.session.engine_mut().set_audio(&self.settings.audio);
                 self.save_settings();
             }
             SettingsAction::SetAudioInput(input) => {
-                let result = self.engine.set_audio_input(input);
+                let result = self.session.engine_mut().set_audio_input(input);
                 self.persist_audio_input(result.is_ok());
                 if let Err(error) = result
-                    && self.engine.audio_input_error().is_none()
-                    && !matches!(self.engine.audio_state(), AudioState::NoDevice { .. })
+                    && self.session.engine().audio_input_error().is_none()
+                    && !matches!(
+                        self.session.engine().audio_state(),
+                        AudioState::NoDevice { .. }
+                    )
                 {
                     self.set_status(self.lang.audio_input_open_failed(error), StatusKind::Error);
                 }
@@ -3142,15 +3171,18 @@ impl App {
             SettingsAction::RetryAudio => {
                 // Only a stream that is not running is restarted: reopening a running one would
                 // interrupt playback, and the retry button also shows for a failed device list.
-                if !matches!(self.engine.audio_state(), AudioState::Running { .. }) {
+                if !matches!(
+                    self.session.engine().audio_state(),
+                    AudioState::Running { .. }
+                ) {
                     let config = self.settings.audio.clone();
-                    let _ = self.engine.set_audio(&config);
+                    let _ = self.session.engine_mut().set_audio(&config);
                 }
                 // The device list may have changed too.
                 self.audio_settings.refresh();
             }
             SettingsAction::SetMidiInput { name, enabled } => {
-                if let Some(hub) = self.engine.midi_mut()
+                if let Some(hub) = self.session.engine_mut().midi_mut()
                     && let Err(error) = hub.set_enabled(&name, enabled)
                 {
                     eprintln!("komponist: MIDI input {name}: {error}");
@@ -3533,7 +3565,8 @@ mod tests {
     fn catalog_restoration_refreshes_the_missing_dialog_waiting_behind_flatten() {
         let mut app = App::headless(Project::new("Restored device"));
         let Some(plugin) = app
-            .engine
+            .session
+            .engine()
             .host()
             .catalog()
             .entries()
@@ -3706,7 +3739,7 @@ mod tests {
     fn retry_audio_keeps_a_running_stream_untouched() {
         let mut app = App::headless(empty_project());
         app.step();
-        let running = app.engine.audio_state().clone();
+        let running = app.session.engine().audio_state().clone();
         assert!(matches!(running, AudioState::Running { .. }));
         // A saved config that differs from the running stream: a restart would replace it.
         let AudioState::Running { config, .. } = &running else {
@@ -3720,7 +3753,7 @@ mod tests {
         };
         app.settings.audio = other;
         app.dispatch(Action::Settings(SettingsAction::RetryAudio));
-        assert_eq!(*app.engine.audio_state(), running);
+        assert_eq!(*app.session.engine().audio_state(), running);
     }
 
     fn recording_app() -> App {
@@ -3758,7 +3791,10 @@ mod tests {
             device: Some("Unavailable input".into()),
             device_id: None,
         };
-        app.engine.set_audio_input(Some(previous.clone())).unwrap();
+        app.session
+            .engine_mut()
+            .set_audio_input(Some(previous.clone()))
+            .unwrap();
         app.settings.audio_input = Some(previous.clone());
         let scratch = std::env::temp_dir().join(format!(
             "komponist-track-capture-rollback-{}",
@@ -3778,10 +3814,10 @@ mod tests {
             Ok(())
         });
         assert!(matches!(
-            app.engine.audio_state(),
+            app.session.engine().audio_state(),
             AudioState::Running { .. }
         ));
-        assert_eq!(app.engine.audio_input_config(), Some(&previous));
+        assert_eq!(app.session.engine().audio_input_config(), Some(&previous));
         assert_eq!(app.project().track(track).unwrap().audio.input, old_route);
         assert_eq!(app.settings.audio_input, Some(previous.clone()));
         assert_eq!(
@@ -3844,26 +3880,39 @@ mod tests {
         app.step();
         let lead = app.project().tracks[2].channel.devices[0].id;
         // Single-threaded, so the panic is on this thread and outside `assert_no_alloc`.
-        assert_eq!(app.engine.set_workers(Some(0)).unwrap().unwrap().threads, 0);
-        let slot = app.engine.program().unwrap().slots.slot(lead).unwrap();
-        app.engine.hold_engine().unwrap();
-        app.engine.send(Command::InsertProcessor {
+        assert_eq!(
+            app.session
+                .engine_mut()
+                .set_workers(Some(0))
+                .unwrap()
+                .unwrap()
+                .threads,
+            0
+        );
+        let slot = app
+            .session
+            .engine()
+            .program()
+            .unwrap()
+            .slots
+            .slot(lead)
+            .unwrap();
+        app.session.engine_mut().hold_engine().unwrap();
+        app.session.engine_mut().send(Command::InsertProcessor {
             slot,
             processor: Box::new(komponist_engine::testing::TestPanic),
         });
-        let engine = &mut app.engine;
+        let engine = app.session.engine_mut();
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             engine.run_held(256, &[], 0);
         }));
         assert!(caught.is_err(), "the processor ran");
-        app.engine.release_engine();
-        app.engine.queue_notices(
+        app.session.engine_mut().release_engine();
+        let track = app.project().tracks[0].id;
+        app.session.engine_mut().queue_notices(
             MidiChange::Appeared("P-125".into()),
             Diagnostic {
-                subject: Subject::Track {
-                    track: app.project().tracks[0].id,
-                    index: 0,
-                },
+                subject: Subject::Track { track, index: 0 },
                 reason: Reason::TrackLimit,
             },
         );
@@ -3874,8 +3923,8 @@ mod tests {
             Some((app.lang.status_engine_rebuilt(), StatusKind::Error))
         );
         // Both notices were handled in that drain.
-        assert!(app.engine.take_midi_changes().is_empty());
-        assert!(!app.engine.take_diagnostics_notice());
+        assert!(app.session.engine_mut().take_midi_changes().is_empty());
+        assert!(!app.session.engine_mut().take_diagnostics_notice());
     }
 
     #[test]

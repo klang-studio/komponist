@@ -653,7 +653,7 @@ impl App {
         mode: AutomationMode,
     ) {
         self.drain_events();
-        let tick = self.engine.playhead();
+        let tick = self.session.engine().playhead();
         let project = self.project().clone();
         self.recording
             .automation
@@ -675,7 +675,8 @@ impl App {
             // Successful mappings already removed this lane from the compiled program.
             // A rejected mapping can still produce samples and loop restarts.
             if self
-                .engine
+                .session
+                .engine()
                 .program()
                 .is_some_and(|program| program.automation_model_target(owner, target).is_some())
             {
@@ -726,7 +727,8 @@ impl App {
             _ => return,
         };
         let Some(model) = self
-            .engine
+            .session
+            .engine()
             .program()
             .and_then(|p| p.automation_model_target(owner, target))
             .cloned()
@@ -774,7 +776,8 @@ impl App {
         else {
             return false;
         };
-        self.engine
+        self.session
+            .engine()
             .host()
             .params(device)
             .and_then(|params| params.iter().find(|p| p.id == wire_id))
@@ -782,7 +785,8 @@ impl App {
     }
 
     fn automation_base(&self, owner: AutomationOwner, target: &AutomationTarget) -> f32 {
-        self.engine
+        self.session
+            .engine()
             .program()
             .and_then(|p| p.automation_base(owner, target))
             .unwrap_or_default()
@@ -801,7 +805,7 @@ impl App {
         let project = self.project().clone();
         self.recording
             .automation
-            .end_segments(&project, self.engine.playhead());
+            .end_segments(&project, self.session.engine().playhead());
         std::mem::take(&mut self.recording.automation)
     }
 
@@ -819,7 +823,7 @@ impl App {
         self.recording.automation = AutomationCapture::default();
         self.recording.controls.clear();
         self.recording.automation_stop_pending = false;
-        self.engine.discard_pending_macro_overrides();
+        self.session.engine_mut().discard_pending_macro_overrides();
     }
 
     pub(crate) fn device_automation_target(
@@ -852,7 +856,7 @@ impl App {
             self.transport(),
             TransportState::Playing | TransportState::Recording
         );
-        let Some(program) = self.engine.program() else {
+        let Some(program) = self.session.engine().program() else {
             return false;
         };
         if program.automation_mode(owner, target) != Some(lane.mode) {
@@ -871,13 +875,20 @@ impl App {
             self.set_status(hint, crate::ui_state::StatusKind::Info);
         }
         if let Command::SetParam { slot, id, value } = command
-            && let Some(device) = self.engine.program().and_then(|p| p.slots.device(slot))
+            && let Some(device) = self
+                .session
+                .engine()
+                .program()
+                .and_then(|p| p.slots.device(slot))
         {
-            self.engine.host_mut().preview_param(device, id, value);
+            self.session
+                .engine_mut()
+                .host_mut()
+                .preview_param(device, id, value);
         }
-        let gesture = self.doc.in_gesture();
+        let gesture = self.session.document().in_gesture();
         if !self.recording.controls.contains(&(owner, target)) {
-            self.engine.send(Command::Touch {
+            self.session.engine_mut().send(Command::Touch {
                 owner,
                 target,
                 begin: true,
@@ -892,7 +903,7 @@ impl App {
                 index,
                 value,
                 ..
-            } => self.engine.macro_value_command(
+            } => self.session.engine_mut().macro_value_command(
                 track,
                 index,
                 komponist_session::engine_sync::MacroValueEdit::AutomationOverride(
@@ -901,9 +912,9 @@ impl App {
             ),
             command => command,
         };
-        self.engine.send(command);
+        self.session.engine_mut().send(command);
         if !gesture {
-            self.engine.send(Command::Touch {
+            self.session.engine_mut().send(Command::Touch {
                 owner,
                 target,
                 begin: false,
@@ -914,7 +925,7 @@ impl App {
 
     pub(crate) fn release_automation_controls(&mut self) {
         for (owner, target) in self.recording.controls.drain(..) {
-            self.engine.send(Command::Touch {
+            self.session.engine_mut().send(Command::Touch {
                 owner,
                 target,
                 begin: false,
@@ -1050,9 +1061,9 @@ mod tests {
             let project =
                 edits::set_lane_mode(&project, owner, lane, AutomationMode::Latch).unwrap();
             let mut app = App::headless(project);
-            app.engine.hold_engine().unwrap();
+            app.session.engine_mut().hold_engine().unwrap();
             let run = |app: &mut App, frames| {
-                assert!(app.engine.run_held(frames, &[], 0));
+                assert!(app.session.engine_mut().run_held(frames, &[], 0));
                 app.step();
             };
             app.dispatch(Action::Transport(TransportAction::TogglePlay));
@@ -1063,7 +1074,7 @@ mod tests {
             run(&mut app, 1024);
             assert!(app.recording.automation.is_writing(owner, lane));
 
-            let end = app.engine.playhead();
+            let end = app.session.engine().playhead();
             let action = if bulk {
                 Automation::AllModes(owner, AutomationMode::Off)
             } else {
@@ -1073,7 +1084,7 @@ mod tests {
             assert!(!app.recording.automation.is_writing(owner, lane));
             app.step();
             run(&mut app, 2048);
-            assert!(app.engine.playhead() > end + Tick(1));
+            assert!(app.session.engine().playhead() > end + Tick(1));
             app.dispatch(Action::Transport(TransportAction::Stop));
             run(&mut app, 256);
 
@@ -1087,7 +1098,10 @@ mod tests {
                 automation::value_at(lane.points.as_slice(), end + Tick(2)),
                 Some(0.5)
             );
-            assert_eq!(app.doc.undo_label(), Some("undo-automation-record"));
+            assert_eq!(
+                app.session.document().undo_label(),
+                Some("undo-automation-record")
+            );
         }
     }
 
@@ -1232,9 +1246,9 @@ mod tests {
         let p = edits::set_lane_mode(&p, owner, id, AutomationMode::Latch).unwrap();
         let master_gain = p.master.volume_db;
         let mut app = App::headless(p.clone());
-        app.engine.hold_engine().unwrap();
+        app.session.engine_mut().hold_engine().unwrap();
         app.dispatch(Action::Transport(TransportAction::TogglePlay));
-        assert!(app.engine.run_held(1024, &[], 0));
+        assert!(app.session.engine_mut().run_held(1024, &[], 0));
         app.step();
         app.dispatch(Action::Edit(EditAction::BeginGesture {
             label: "Volume".into(),
@@ -1242,25 +1256,28 @@ mod tests {
         app.dispatch(Action::Edit(EditAction::SetMasterProp(
             ChannelProp::VolumeDb(-16.0),
         )));
-        assert!(app.engine.run_held(1024, &[], 0));
+        assert!(app.session.engine_mut().run_held(1024, &[], 0));
         app.step();
         app.dispatch(Action::Edit(EditAction::EndGesture));
-        assert!(app.engine.run_held(1024, &[], 0));
+        assert!(app.session.engine_mut().run_held(1024, &[], 0));
         app.step();
         assert!(app.recording.automation.is_writing(owner, id));
         assert_eq!(app.project().master.volume_db, master_gain);
-        assert!(app.doc.undo_label().is_none());
+        assert!(app.session.document().undo_label().is_none());
         app.dispatch(Action::Transport(TransportAction::Stop));
-        assert!(app.engine.run_held(256, &[], 0));
+        assert!(app.session.engine_mut().run_held(256, &[], 0));
         app.step();
         let lane = app.project().master_automation.lane(&target).unwrap();
         assert!(lane.points.as_slice().iter().any(|point| {
             (point.value - (1.0 - komponist_model::params::db_to_p(-16.0))).abs() < 1e-5
         }));
-        assert_eq!(app.doc.undo_label(), Some("undo-automation-record"));
-        assert!(app.doc.undo());
+        assert_eq!(
+            app.session.document().undo_label(),
+            Some("undo-automation-record")
+        );
+        assert!(app.session.document_mut().undo());
         assert_eq!(app.project().as_ref(), &p);
-        assert!(app.doc.undo_label().is_none());
+        assert!(app.session.document().undo_label().is_none());
     }
 
     /// #210 review: a latch pass running when the engine panics ends at the crash playhead and
@@ -1286,10 +1303,18 @@ mod tests {
         app.step();
         let instrument = app.project().tracks[0].channel.devices[0].id;
         // Single-threaded, so the panic is on this thread and outside `assert_no_alloc`.
-        assert_eq!(app.engine.set_workers(Some(0)).unwrap().unwrap().threads, 0);
-        app.engine.hold_engine().unwrap();
+        assert_eq!(
+            app.session
+                .engine_mut()
+                .set_workers(Some(0))
+                .unwrap()
+                .unwrap()
+                .threads,
+            0
+        );
+        app.session.engine_mut().hold_engine().unwrap();
         app.dispatch(Action::Transport(TransportAction::TogglePlay));
-        assert!(app.engine.run_held(1024, &[], 0));
+        assert!(app.session.engine_mut().run_held(1024, &[], 0));
         app.step();
         app.dispatch(Action::Edit(EditAction::BeginGesture {
             label: "Volume".into(),
@@ -1297,36 +1322,40 @@ mod tests {
         app.dispatch(Action::Edit(EditAction::SetMasterProp(
             ChannelProp::VolumeDb(-16.0),
         )));
-        assert!(app.engine.run_held(1024, &[], 0));
+        assert!(app.session.engine_mut().run_held(1024, &[], 0));
         app.step();
         app.dispatch(Action::Edit(EditAction::EndGesture));
-        assert!(app.engine.run_held(1024, &[], 0));
+        assert!(app.session.engine_mut().run_held(1024, &[], 0));
         app.step();
         assert!(app.recording.automation.is_writing(owner, id));
         assert!(app.recording.midi.is_none() && !app.recording.audio.is_active());
-        let at = app.engine.playhead();
+        let at = app.session.engine().playhead();
         assert!(at > Tick::ZERO);
         let slot = app
-            .engine
+            .session
+            .engine()
             .program()
             .unwrap()
             .slots
             .slot(instrument)
             .unwrap();
-        app.engine.send(Command::InsertProcessor {
+        app.session.engine_mut().send(Command::InsertProcessor {
             slot,
             processor: Box::new(komponist_engine::testing::TestPanic),
         });
-        let engine = &mut app.engine;
+        let engine = app.session.engine_mut();
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             engine.run_held(256, &[], 0);
         }));
         assert!(caught.is_err(), "the processor ran");
-        app.engine.release_engine();
+        app.session.engine_mut().release_engine();
         app.drain_events();
 
         assert!(!app.recording.automation.active(), "the pass ended");
-        assert_eq!(app.doc.undo_label(), Some("undo-automation-record"));
+        assert_eq!(
+            app.session.document().undo_label(),
+            Some("undo-automation-record")
+        );
         let lane = app.project().master_automation.lane(&target).unwrap();
         let written = 1.0 - komponist_model::params::db_to_p(-16.0);
         let points = lane.points.as_slice();
@@ -1368,7 +1397,7 @@ mod tests {
         let mut app = App::headless(project.clone());
         app.sync_project();
         let compiled_value = |app: &App| {
-            let program = app.engine.program().unwrap();
+            let program = app.session.engine().program().unwrap();
             let lane = program
                 .master
                 .automation
@@ -1382,60 +1411,67 @@ mod tests {
         app.recording.automation = pass(0.75);
         app.sync_project();
         assert_eq!(compiled_value(&app), Some(0.75));
-        let sent = app.engine.programs_sent();
+        let sent = app.session.engine().programs_sent();
         app.sync_project();
-        assert_eq!(app.engine.programs_sent(), sent);
+        assert_eq!(app.session.engine().programs_sent(), sent);
 
         // Replacing one segment with another must publish even at the same document revision.
-        let before = app.doc.revision();
+        let before = app.session.document().revision();
         app.recording.automation = pass(0.6);
         app.sync_project();
-        assert_eq!(app.doc.revision(), before);
+        assert_eq!(app.session.document().revision(), before);
         assert_eq!(compiled_value(&app), Some(0.6));
-        assert_eq!(app.engine.programs_sent(), sent + 1);
+        assert_eq!(app.session.engine().programs_sent(), sent + 1);
 
         // Changing the document and the draft together compiles one project.
-        app.doc
+        app.session
+            .document_mut()
             .apply("Metronome", |p| {
                 project_edits::set_project_prop(p, ProjectProp::Metronome(!p.metronome))
             })
             .unwrap();
         app.recording.automation = pass(0.65);
         app.sync_project();
-        assert_ne!(app.engine.program().unwrap().metronome, project.metronome);
+        assert_ne!(
+            app.session.engine().program().unwrap().metronome,
+            project.metronome
+        );
         assert_eq!(compiled_value(&app), Some(0.65));
-        assert_eq!(app.engine.programs_sent(), sent + 2);
+        assert_eq!(app.session.engine().programs_sent(), sent + 2);
 
         // During a fast-path gesture, unchanged drafts can wait. Changes in the draft
         // still compile, even when the command covered the whole document edit.
-        app.doc.begin_gesture("Master gain");
-        let before = app.doc.revision();
-        app.doc
+        app.session.document_mut().begin_gesture("Master gain");
+        let before = app.session.document().revision();
+        app.session
+            .document_mut()
             .apply("Master gain", |p| {
                 project_edits::set_master_prop(p, ChannelProp::VolumeDb(-6.0))
             })
             .unwrap();
-        app.engine
-            .fast_path(Command::SetMasterGain(0.5), before, app.doc.revision());
+        let after = app.session.document().revision();
+        app.session
+            .engine_mut()
+            .fast_path(Command::SetMasterGain(0.5), before, after);
         app.sync_project();
-        assert_eq!(app.engine.programs_sent(), sent + 2);
+        assert_eq!(app.session.engine().programs_sent(), sent + 2);
         app.recording.automation = AutomationCapture::default();
         app.sync_project();
         assert_eq!(compiled_value(&app), Some(0.25));
-        assert_eq!(app.engine.programs_sent(), sent + 3);
-        app.doc.end_gesture();
+        assert_eq!(app.session.engine().programs_sent(), sent + 3);
+        app.session.document_mut().end_gesture();
 
-        app.engine.invalidate_project();
+        app.session.engine_mut().invalidate_project();
         app.sync_project();
         assert_eq!(compiled_value(&app), Some(0.25));
-        assert_eq!(app.engine.programs_sent(), sent + 4);
+        assert_eq!(app.session.engine().programs_sent(), sent + 4);
 
         // Cancelling the writer drops the last draft without changing the document or undo.
-        let before = app.doc.revision();
+        let before = app.session.document().revision();
         app.discard_take();
-        assert_eq!(app.doc.revision(), before);
+        assert_eq!(app.session.document().revision(), before);
         assert_eq!(compiled_value(&app), None);
-        assert_eq!(app.engine.programs_sent(), sent + 5);
+        assert_eq!(app.session.engine().programs_sent(), sent + 5);
         assert!(
             app.project()
                 .master_automation
@@ -1444,7 +1480,7 @@ mod tests {
                 .points
                 .is_empty()
         );
-        assert_eq!(app.doc.undo_label(), Some("Master gain"));
+        assert_eq!(app.session.document().undo_label(), Some("Master gain"));
         app.shutdown();
     }
 
@@ -1484,9 +1520,9 @@ mod tests {
         let project = edits::set_lane_mode(&project, owner, lane, AutomationMode::Latch).unwrap();
 
         let mut app = App::headless(project.clone());
-        app.engine.hold_engine().unwrap();
+        app.session.engine_mut().hold_engine().unwrap();
         let advance = |app: &mut App, frames| {
-            assert!(app.engine.run_held(frames, &[], 0));
+            assert!(app.session.engine_mut().run_held(frames, &[], 0));
             app.step();
         };
         let transport = |app: &mut App, action| app.dispatch(Action::Transport(action));
@@ -1513,29 +1549,29 @@ mod tests {
         assert!(app.recording.automation.has_points());
         // Locate has reached the engine but the app has not drained its boundary yet.
         transport(&mut app, TransportAction::Locate(start + Tick(100)));
-        assert!(app.engine.run_held(64, &[], 0));
+        assert!(app.session.engine_mut().run_held(64, &[], 0));
         transport(&mut app, TransportAction::DiscardTake);
         advance(&mut app, 64);
         assert!(!app.recording.automation.active());
         assert_eq!(app.project().as_ref(), &project);
-        assert!(app.doc.undo_label().is_none());
+        assert!(app.session.document().undo_label().is_none());
 
         // A published preview can also be owned by the audio writer while it drains.
         write(&mut app, -0.6);
-        let playhead = app.engine.playhead();
+        let playhead = app.session.engine().playhead();
         app.recording.automation.end_segments(&project, playhead);
         app.sync_project();
         let deferred = app.take_automation_capture();
         app.recording.audio.defer_automation(deferred);
-        let published_program = app.engine.programs_sent();
+        let published_program = app.session.engine().programs_sent();
         app.sync_project();
-        assert_eq!(app.engine.programs_sent(), published_program);
+        assert_eq!(app.session.engine().programs_sent(), published_program);
         transport(&mut app, TransportAction::DiscardTake);
-        assert!(app.engine.programs_sent() > published_program);
+        assert!(app.session.engine().programs_sent() > published_program);
         assert!(app.recording.audio.pending_automation().is_none());
         advance(&mut app, 64);
         assert_eq!(app.project().as_ref(), &project);
-        assert!(app.doc.undo_label().is_none());
+        assert!(app.session.document().undo_label().is_none());
 
         write(&mut app, 0.6);
         transport(&mut app, TransportAction::Stop);
@@ -1556,9 +1592,12 @@ mod tests {
             automation::effective_value_at(track_after, &target, tick + period),
             Some(first)
         );
-        assert_eq!(app.doc.undo_label(), Some("undo-automation-record"));
+        assert_eq!(
+            app.session.document().undo_label(),
+            Some("undo-automation-record")
+        );
         app.dispatch(Action::Edit(EditAction::Undo));
         assert_eq!(app.project().as_ref(), &project);
-        assert!(app.doc.undo_label().is_none());
+        assert!(app.session.document().undo_label().is_none());
     }
 }
