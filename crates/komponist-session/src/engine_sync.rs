@@ -106,6 +106,7 @@ impl EngineSync {
 
     /// Sync the document with any completed in-progress automation. A gesture can skip compiling
     /// a revision sent as fast-path commands as long as the overlay is unchanged.
+    /// The cache identifies each pass by [`AutomationDraft::completed_revision`].
     pub fn sync_with_draft(&mut self, doc: &Document, draft: DraftOverlay<'_>) {
         // Export renders the committed document. The playback draft stays with the app.
         let draft = if self.io.is_detached() {

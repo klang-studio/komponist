@@ -81,7 +81,11 @@ pub enum MacroValueEdit {
 
 /// A completed automation pass that has yet to be committed to document history.
 pub trait AutomationDraft {
-    /// A revision that changes with completed edits. Zero denotes an empty pass.
+    /// Returns the revision of the completed edits, or zero for an empty pass.
+    ///
+    /// For the lifetime of an [`EngineSync`](super::EngineSync), equal nonzero revisions
+    /// must identify the same completed edits, even on different pass instances. Assign a
+    /// fresh revision when the completed edits change and preserve it when moving a pass.
     fn completed_revision(&self) -> u64;
 
     /// Applies the completed edits to the supplied project snapshot.
