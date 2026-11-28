@@ -342,6 +342,7 @@ name = "komponist-rt"
 version = "0.2.0"
 dependencies = [
  "libc",
+ "rustix",
  "windows-sys",
 ]
 
