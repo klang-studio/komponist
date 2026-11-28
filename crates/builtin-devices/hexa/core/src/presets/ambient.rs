@@ -1,5 +1,6 @@
 //! Ambient textures and glitches: sounds that move by themselves, from
-//! random values per note, sample-and-hold LFOs and looping envelopes.
+//! random values per note, sample-and-hold and smooth random LFOs and
+//! looping envelopes.
 
 use super::build::*;
 use super::{Entry, entry};
@@ -16,6 +17,7 @@ pub(super) const LIST: &[Entry] = &[
     entry("Data Stream", 0.359, data_stream),
     entry("Glitch Pluck", 0.213, glitch_pluck),
     entry("Interference", 0.219, interference),
+    entry("Wander Pad", 0.289, wander_pad),
 ];
 
 fn crystal_rain() -> Patch {
@@ -293,5 +295,41 @@ fn interference() -> Patch {
     p.filter(lowpass(5000.0, 0.2));
     p.distort(HARD, 6.0, 0.3, 0.3);
     p.output(0.701);
+    p
+}
+
+fn wander_pad() -> Patch {
+    // A soft FM pad that never sits still: free smooth random LFOs glide the
+    // modulators' brightness, the filter, a slight detune and the stereo
+    // position from one random value to the next, without the steps of
+    // sample-and-hold; every voice takes its own course.
+    let env = adsr(1.2, 1.5, 0.9, 3.0);
+    let mut p = patch(
+        [
+            sine(1.0, 1.0, env),
+            sine(2.0, 0.12, env),
+            sine(1.0, 0.7, env).cents(-7.0),
+            sine(3.0, 0.06, env),
+            off(),
+            off(),
+        ],
+        &[(2, 1), (4, 3)],
+        &[1, 3],
+    );
+    let glow = p.lfo(lfo(SmoothRandom, 0.4).free());
+    let drift = p.lfo(lfo(SmoothRandom, 0.25).free());
+    let sway = p.lfo(lfo(SmoothRandom, 0.15).free());
+    p.route(ModTarget::OpLevel(1), slot(glow, 0.08));
+    p.route(ModTarget::OpLevel(3), slot(glow, -0.04));
+    p.route(ModTarget::Tune, slot(drift, 0.12));
+    p.filter(
+        lowpass(2500.0, 0.2)
+            .keytrack(0.4)
+            .cutoff_mod(slot(glow, 12.0)),
+    );
+    p.route(ModTarget::Balance, slot(sway, 0.5));
+    p.wet(CHORUS, 0.25);
+    p.hall(7.0, 0.4, 0.5);
+    p.output(0.332);
     p
 }

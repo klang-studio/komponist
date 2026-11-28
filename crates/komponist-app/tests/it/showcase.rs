@@ -417,6 +417,9 @@ fn check_sampler_assets(app: &mut App, project: &Project) {
         assert_eq!(value("root"), Some(48.0));
         assert_eq!(value("mode"), Some(if slice_mode { 2.0 } else { 1.0 }));
         assert_eq!(value("sync"), Some(f64::from(u8::from(!slice_mode))));
+        // Smooth Random on the cutoff (#365).
+        assert_eq!(value("lfo_shape"), Some(6.0));
+        assert_eq!(value("lfo_target"), Some(2.0));
         app.engine_mut()
             .host_mut()
             .request_waveform_markers(device.id, 0);

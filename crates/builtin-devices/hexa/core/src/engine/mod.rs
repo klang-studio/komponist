@@ -417,7 +417,7 @@ impl Engine {
         positions
     }
 
-    /// Seeds the random generator of sample-and-hold LFOs, so engines that
+    /// Seeds the random generator of the random LFO shapes, so engines that
     /// share the voices (see [`crate::Synth`]) do not repeat each other.
     pub(crate) fn seed(&mut self, seed: u32) {
         self.lfos.seed(seed);

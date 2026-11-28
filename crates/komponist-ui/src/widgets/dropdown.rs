@@ -442,16 +442,29 @@ impl<'a> Dropdown<'a> {
             + widest(self.field_style())
             + space::SPACE_3
             + metrics::CARET[0];
-        let list = 2.0 * space::SPACE_1
-            + 2.0 * space::SPACE_2
-            + metrics::CHECK_COLUMN
-            + widest(typography::UI);
+        let list = self.list_width(ui);
         if self.label.is_some() || self.compact {
             // Toolbar fields are as wide as their content, not the 96 px minimum.
             field.max(list)
         } else {
             field.max(list).max(size::DROPDOWN_MIN_WIDTH)
         }
+    }
+
+    /// Width of the popup that shows every option in full (check column and paddings included).
+    fn list_width(&self, ui: &Ui) -> f32 {
+        let style = typography::UI;
+        let widest = self
+            .items
+            .iter()
+            .map(|it| {
+                super::galley(ui, it.label, fonts::font_id(&style), style.line_height)
+                    .size()
+                    .x
+            })
+            .fold(0.0_f32, f32::max)
+            .ceil();
+        2.0 * space::SPACE_1 + 2.0 * space::SPACE_2 + metrics::CHECK_COLUMN + widest
     }
 
     fn current_label(&self) -> &'a str {
@@ -530,13 +543,17 @@ impl<'a> Dropdown<'a> {
         highlight: Option<usize>,
         reveal: Option<usize>,
     ) -> (ListOutput, Rect) {
-        let width = if self.list_height.is_some() {
+        // A list is at least as wide as its field and grows so no option runs past its edge
+        // (e.g. a device dropdown of two cells with „Aufsteigender Sägezahn“).
+        let content = if self.list_height.is_some() {
             self.natural_width(ui)
-                .max(field.rect.width())
-                .min(ui.ctx().content_rect().width() - 2.0 * space::SPACE_4)
         } else {
-            field.rect.width()
-        } - 2.0 * space::SPACE_1;
+            self.list_width(ui)
+        };
+        let width = content
+            .max(field.rect.width())
+            .min(ui.ctx().content_rect().width() - 2.0 * space::SPACE_4)
+            - 2.0 * space::SPACE_1;
         let pos = field.rect.left_bottom() + vec2(0.0, LIST_GAP);
         let selected = *self.selected;
         let area = Area::new(Self::popup_id(field.id))

@@ -356,6 +356,7 @@ fn waveform_zoom_slice_editing_and_pages_are_accessible() {
             lang,
             format!("general-sampler-modulation-1x{suffix}"),
         );
+        check_lfo_shapes(&mut playback, lang, suffix);
         snapshots.extend_harness(&mut playback);
 
         let (mut slices, device) =
@@ -381,6 +382,50 @@ fn waveform_zoom_slice_editing_and_pages_are_accessible() {
         snapshots.extend_harness(&mut slices);
     }
     snapshots.unwrap();
+}
+
+/// The demo's Glass Pluck plays Smooth Random, the last of the LFO shapes (#365): the field shows
+/// it, the open list names every shape.
+fn check_lfo_shapes(harness: &mut Harness<'_, App>, lang: Lang, suffix: &str) {
+    let field =
+        harness.get_by_role_and_label(Role::ComboBox, lang.param_general_sampler_lfo_shape());
+    assert_eq!(
+        field.value().as_deref(),
+        Some(lang.param_general_sampler_smooth_random())
+    );
+    let at = field.rect().center();
+    click(harness, at);
+    let shapes = [
+        lang.param_general_sampler_sine(),
+        lang.param_general_sampler_triangle(),
+        lang.param_general_sampler_saw_up(),
+        lang.param_general_sampler_saw_down(),
+        lang.param_general_sampler_square(),
+        lang.param_general_sampler_sample_hold(),
+        lang.param_general_sampler_smooth_random(),
+    ];
+    for shape in &shapes {
+        let option = harness.get_by_role_and_label(Role::ListBoxOption, shape);
+        assert_eq!(
+            option.accesskit_node().is_selected(),
+            Some(shape == shapes.last().unwrap()),
+            "{shape}"
+        );
+    }
+    harness.hover_at(Pos2::ZERO);
+    harness.run_steps(3);
+    snapshot(
+        harness,
+        lang,
+        format!("general-sampler-lfo-shapes-1x{suffix}"),
+    );
+    harness.key_press(egui::Key::Escape);
+    harness.run_steps(3);
+    assert!(
+        harness
+            .query_by_role_and_label(Role::ListBoxOption, shapes[0])
+            .is_none()
+    );
 }
 
 fn wait_for_waveform_image(harness: &mut Harness<'_, App>, device: DeviceId) {

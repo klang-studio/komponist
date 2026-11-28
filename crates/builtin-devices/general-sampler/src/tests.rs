@@ -349,3 +349,66 @@ fn a_source_that_cannot_be_prepared_reports_unavailable() {
         Some(SyncStatus::Unavailable)
     );
 }
+
+/// Frequency of `samples` from its first to its last rising zero crossing (interpolated).
+fn frequency(samples: &[f32]) -> f32 {
+    let crossings: Vec<f32> = samples
+        .windows(2)
+        .enumerate()
+        .filter(|(_, w)| w[0] < 0.0 && w[1] >= 0.0)
+        .map(|(i, w)| i as f32 + w[0] / (w[0] - w[1]))
+        .collect();
+    let (first, last) = (crossings[0], crossings[crossings.len() - 1]);
+    (crossings.len() - 1) as f32 * RATE / (last - first)
+}
+
+/// A held 400 Hz tone with the LFO on the pitch (±4.8 semitones at 3 Hz), one second, every
+/// block inside `assert_no_alloc`.
+fn render_lfo_pitch(path: &Path, shape: f64) -> Vec<f32> {
+    let mut sampler = ready(
+        path,
+        &[
+            ("lfo_shape", shape),
+            ("lfo_rate", 3.0),
+            ("lfo_target", 1.0),
+            ("lfo_depth", 0.1),
+        ],
+        &Settings::default(),
+        120.0,
+    );
+    let mut output = render(&mut sampler, 120.0, &[note_on(0, 60, 1)], BLOCK);
+    while output.len() < RATE as usize {
+        output.extend(render(&mut sampler, 120.0, &[], BLOCK));
+    }
+    output
+}
+
+#[test]
+fn smooth_random_lfo_glides_the_pitch_between_random_values() {
+    let source = (0..2 * RATE as usize)
+        .map(|i| 0.4 * (i as f32 * 400.0 * std::f32::consts::TAU / RATE).sin())
+        .collect::<Vec<_>>();
+    let fixture = Fixture::new("smooth-random", &source);
+    let smooth = render_lfo_pitch(&fixture.0, 6.0);
+    // Shape 6 is its own: neither the sine nor the sample-and-hold (which starts at the same
+    // held value).
+    assert_ne!(smooth, render_lfo_pitch(&fixture.0, 0.0));
+    assert_ne!(smooth, render_lfo_pitch(&fixture.0, 5.0));
+
+    // The pitch in windows of 25 ms: it wanders, but without the steps of sample-and-hold. At
+    // most 1.5 · 2 · 3 Hz · 25 ms · 4.8 = 1.1 semitones from one window to the next.
+    let pitches: Vec<f32> = smooth
+        .as_chunks::<400>()
+        .0
+        .iter()
+        .map(|window| 12.0 * (frequency(window) / 400.0).log2())
+        .collect();
+    let (low, high) = pitches
+        .iter()
+        .fold((f32::MAX, f32::MIN), |(lo, hi), &p| (lo.min(p), hi.max(p)));
+    assert!(high - low > 1.0, "barely moves: {low}..{high} semitones");
+    assert!(low > -4.9 && high < 4.9, "{low}..{high} semitones");
+    for pair in pitches.windows(2) {
+        assert!((pair[1] - pair[0]).abs() < 1.2, "step {pair:?}");
+    }
+}

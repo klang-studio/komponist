@@ -193,6 +193,9 @@ fn sampler_values(melody: bool) -> Vec<(&'static str, f64)> {
         ("resonance", 0.18),
         ("filter_env", (0.28 + 8.0) / 16.0),
         ("filter_decay", 190.0 / 10000.0),
+        // Smooth Random: the cutoff wanders from one random value to the next, every note on its
+        // own course, never in steps.
+        ("lfo_shape", 6.0),
         ("lfo_rate", log_position(0.70, 0.05, 30.0)),
         ("lfo_target", 2.0),
         ("lfo_depth", (0.08 + 1.0) / 2.0),

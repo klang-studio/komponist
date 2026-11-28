@@ -305,8 +305,8 @@ impl Lfo for LfoSpec {
 }
 
 pub use LfoWaveform::{
-    SampleHold, SawDown as LfoSawDown, SawUp as LfoSawUp, Sine as LfoSine, Square as LfoSquare,
-    Triangle as LfoTriangle,
+    SampleHold, SawDown as LfoSawDown, SawUp as LfoSawUp, Sine as LfoSine, SmoothRandom,
+    Square as LfoSquare, Triangle as LfoTriangle,
 };
 
 /// Modulators added to a patch, returning the source to connect.

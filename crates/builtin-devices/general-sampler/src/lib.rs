@@ -308,6 +308,7 @@ fn params(t: Lang) -> Vec<ParamInfo> {
                 t.param_general_sampler_saw_down(),
                 t.param_general_sampler_square(),
                 t.param_general_sampler_sample_hold(),
+                t.param_general_sampler_smooth_random(),
             ],
             0.0,
         ),

@@ -632,6 +632,8 @@ param-general-sampler-saw-up = Aufsteigender Sägezahn
 param-general-sampler-saw-down = Absteigender Sägezahn
 param-general-sampler-square = Rechteck
 param-general-sampler-sample-hold = Sample & Hold
+# General-Sampler LFO shape: from one random value to the next without steps.
+param-general-sampler-smooth-random = Glatter Zufall
 param-general-sampler-lfo-rate = LFO-Frequenz
 param-general-sampler-lfo-target = LFO-Ziel
 param-general-sampler-lfo-depth = LFO-Stärke

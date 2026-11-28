@@ -119,6 +119,7 @@ impl GeneralSamplerDsp {
                 3 => LfoShape::SawDown,
                 4 => LfoShape::Square,
                 5 => LfoShape::SampleHold,
+                6 => LfoShape::SmoothRandom,
                 _ => LfoShape::Sine,
             },
             lfo_rate_hz: value(Param::LfoRate),

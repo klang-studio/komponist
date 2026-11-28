@@ -62,6 +62,9 @@ enum Wave {
     #[id = "sample-hold"]
     #[name = "Sample & hold"]
     SampleHold,
+    #[id = "smooth-random"]
+    #[name = "Smooth random"]
+    SmoothRandom,
 }
 
 #[derive(Clone, Copy, Enum, PartialEq)]

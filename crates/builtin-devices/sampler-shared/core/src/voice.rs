@@ -103,8 +103,8 @@ impl Voice {
             choke_gain: 1.0,
             ..Self::default()
         };
-        self.lfo
-            .reset(if s.lfo_retrigger { 0.0 } else { v.lfo_phase }, &mut rng);
+        let phase = if s.lfo_retrigger { 0.0 } else { v.lfo_phase };
+        self.lfo.reset(s.lfo_shape, phase, &mut rng);
         self.rng = rng;
 
         if s.has_note_on_mod {

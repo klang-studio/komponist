@@ -9,8 +9,8 @@
 //! gets the same patch, settings and blocks, so the per-block state outside
 //! the voices (smoothing, free-running LFOs) stays identical, and the sum of
 //! the engines' unclamped outputs equals that of `Synth<1>` with all voices
-//! on one engine (up to the order of the float additions and
-//! sample-and-hold random values). The
+//! on one engine (up to the order of the float additions and the random
+//! values of random LFOs). The
 //! effects ([`Effects`]) run on that sum.
 
 use core::ptr::addr_of_mut;
@@ -363,21 +363,16 @@ mod tests {
 
     #[test]
     fn split_sounds_like_one_engine() {
-        // Every preset without sample-and-hold LFOs (their random values
-        // differ between the engines by design), without the master effects
-        // (they only see the sum).
+        // Every preset without random LFOs (their random values differ
+        // between the engines by design), without the master effects (they
+        // only see the sum).
         let mut compared = 0;
         for i in 0..PRESET_COUNT {
             let patch = Patch {
                 effects: Default::default(),
                 ..preset(i).unwrap().patch
             };
-            if patch
-                .lfos
-                .as_slice()
-                .iter()
-                .any(|l| l.waveform == crate::LfoWaveform::SampleHold)
-            {
+            if patch.lfos.as_slice().iter().any(|l| l.waveform.is_random()) {
                 continue;
             }
             let ((al, ar), (bl, br)) = play::<2>(patch);

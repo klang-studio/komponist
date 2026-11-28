@@ -866,6 +866,39 @@ fn volume_slot_moves_around_the_base_volume() {
 }
 
 #[test]
+fn smooth_random_moves_the_volume_without_steps_or_allocations() {
+    use assert_no_alloc::assert_no_alloc;
+    let mut patch = lfo_patch(crate::LfoWaveform::SmoothRandom, 2.0);
+    patch.volume = 0.5;
+    patch.modulate(ModTarget::Volume, lfo(0.25));
+    let mut engine = synth(patch);
+    assert_no_alloc(|| engine.note_on(69, 127));
+    // Two seconds in blocks of 20 ms (almost nine periods of A4 each).
+    let (mut l, mut r) = ([0.0; 960], [0.0; 960]);
+    let mut levels = Vec::with_capacity(100);
+    for _ in 0..100 {
+        assert_no_alloc(|| engine.render(&mut l, &mut r));
+        levels.push(rms(&l));
+    }
+    // Past the attack: the volume wanders between 0.25 and 0.75 …
+    let levels = &levels[5..];
+    let (low, high) = levels
+        .iter()
+        .fold((f32::MAX, 0.0f32), |(lo, hi), &x| (lo.min(x), hi.max(x)));
+    assert!(high / low > 1.3, "barely moves: {low}..{high}");
+    // … without steps: at most 1.5 · 2 · 2 Hz · 20 ms · 0.25 = 0.03 per block,
+    // 12 % of the lowest volume (a square would jump by 200 %).
+    for pair in levels.windows(2) {
+        assert!(
+            (pair[1] / pair[0] - 1.0).abs() < 0.15,
+            "step {} → {}",
+            pair[0],
+            pair[1]
+        );
+    }
+}
+
+#[test]
 fn level_slot_modulates_modulation_depth() {
     let mut patch = lfo_patch(crate::LfoWaveform::Square, 1.0);
     patch.operators[MODULATOR].envelope.sustain = 1.0;
