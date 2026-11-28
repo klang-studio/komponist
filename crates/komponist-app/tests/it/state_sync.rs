@@ -1,110 +1,129 @@
-//! Tracked preset, paste, and asset-link edits reach the running processor through
-//! `EngineSync::sync_device_states`, including on undo and redo, over real CLAP processors.
+//! App actions and device events keep live CLAP parameters and asset links in sync through
+//! undo and redo. Audio probes and snapshots check the running processors.
 
 use crate::common::*;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use komponist_app::device_host::{DeviceHost, PluginCatalogHost};
-use komponist_app::engine_sync::{EngineSync, MidiSetup, SyncEvent};
-use komponist_audio::{HostKind, StreamConfig};
+use komponist_app::device_host::PluginCatalogHost;
+use komponist_app::{Action, App, EditAction, PluginAction};
 use komponist_audiofile::fixtures as testkit;
 use komponist_engine::Command;
 use komponist_ipc::control::RenderMode;
 use komponist_model::edits::{self, NewDevice};
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::project::SavedPluginState;
-use komponist_model::{ChannelRef, DeviceId, DeviceRole, Document, Project, TrackId};
+use komponist_model::{ChannelRef, DeviceId, DeviceRole, Project, TrackId};
 use komponist_plugin_api::device_assets::AssetStatus;
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
 
-fn null_sync(host: Box<dyn DeviceHost>) -> EngineSync {
-    let config = StreamConfig {
-        host: HostKind::Null,
-        buffer_frames: NULL_BUFFER,
-        ..StreamConfig::default()
-    };
-    let (sync, started) = EngineSync::new(&config, MidiSetup::None, host);
-    started.expect("null backend");
-    sync
+fn undo(app: &mut App) {
+    assert!(app.doc().undo_label().is_some());
+    app.dispatch(Action::Edit(EditAction::Undo));
 }
 
-/// Sends the document to the engine and moves the engine to the document after `before`.
-fn follow(sync: &mut EngineSync, doc: &Document, before: &Project) {
-    sync.sync(doc);
-    sync.sync_device_states(before, doc.project(), &Default::default());
+fn redo(app: &mut App) {
+    assert!(app.doc().redo_label().is_some());
+    app.dispatch(Action::Edit(EditAction::Redo));
 }
 
-fn undo(sync: &mut EngineSync, doc: &mut Document) {
-    let before = Arc::clone(doc.project());
-    assert!(doc.undo());
-    follow(sync, doc, &before);
+fn saved_state(app: &App, device: DeviceId) -> Option<SavedPluginState> {
+    app.project().find_device(device)?.2.saved_state()
 }
 
-fn redo(sync: &mut EngineSync, doc: &mut Document) {
-    let before = Arc::clone(doc.project());
-    assert!(doc.redo());
-    follow(sync, doc, &before);
+/// Commit one parameter gesture through the dispatcher and wait for the app to store its state.
+fn edit_parameters(
+    app: &mut App,
+    device: DeviceId,
+    first: (u32, f64),
+    rest: &[(u32, f64)],
+) -> SavedPluginState {
+    let previous_step = app.doc().top_step();
+    let (id, _) = first;
+    app.dispatch(Action::Plugin(PluginAction::BeginParamGesture {
+        device,
+        id,
+    }));
+    for (id, value) in std::iter::once(first).chain(rest.iter().copied()) {
+        app.dispatch(Action::Plugin(PluginAction::SetParam { device, id, value }));
+    }
+    app.dispatch(Action::Edit(EditAction::EndGesture));
+    step_until(
+        app,
+        "the app to store the released gesture's snapshot",
+        |app| {
+            let Some(stored) = saved_state(app, device) else {
+                return false;
+            };
+            let host = app.engine().host();
+            // The host's live bases and a new undo step can precede the snapshot response.
+            // Wait for a handled snapshot that includes all pending edits and is stored in the project.
+            app.doc()
+                .top_step()
+                .is_some_and(|step| Some(step) != previous_step)
+                && app.device_events().iter().any(|event| {
+                    matches!(event, PluginManagerEvent::StateSnapshot { device: id, state }
+                    if *id == device && *state == stored
+                        && host.is_current_param_snapshot(device, &state.bytes))
+                })
+                && std::iter::once(first)
+                    .chain(rest.iter().copied())
+                    .all(|(id, value)| {
+                        host.param_base(device, id)
+                            .is_some_and(|actual| (actual - value).abs() < 1e-6)
+                    })
+        },
+    );
+    saved_state(app, device).expect("the app stored the current snapshot")
 }
 
 /// Render a live note and drain its release before probing again.
-fn note_peak_with_tail(sync: &mut EngineSync, track: TrackId, key: u8, tail_frames: usize) -> f32 {
-    sync.send(Command::LiveNote {
+fn note_peak_with_tail(app: &mut App, track: TrackId, key: u8, tail_frames: usize) -> f32 {
+    let engine = app.engine_mut();
+    engine.send(Command::LiveNote {
         track,
         key,
         velocity: 100,
     });
-    let (l, r) = sync.render_held(9600).expect("held engine");
-    sync.send(Command::LiveNote {
+    let (l, r) = engine.render_held(9600).expect("held engine");
+    engine.send(Command::LiveNote {
         track,
         key,
         velocity: 0,
     });
-    sync.render_held(tail_frames);
+    engine.render_held(tail_frames);
     l.iter().chain(&r).fold(0.0_f32, |m, s| m.max(s.abs()))
 }
 
-fn note_peak(sync: &mut EngineSync, track: TrackId) -> f32 {
-    note_peak_with_tail(sync, track, 60, 96_000)
+fn note_peak(app: &mut App, track: TrackId) -> f32 {
+    note_peak_with_tail(app, track, 60, 96_000)
 }
 
-/// Capture the device's own bytes and the host-owned parameter bases together.
-fn snapshot(sync: &mut EngineSync, device: DeviceId) -> SavedPluginState {
-    sync.host_mut().request_state(device);
+/// Capture the device's bytes and host-owned parameter bases after the app handles the event.
+fn snapshot(app: &mut App, device: DeviceId) -> SavedPluginState {
+    app.engine_mut().host_mut().request_state(device);
     let mut snapshot = None;
-    // A bridge defers a capture while an edit is queued for its audio processor.
-    // Poll until it publishes the snapshot taken after delivering the edit.
-    wait(sync, "the device state snapshot", |_, events| {
-        snapshot = events.iter().rev().find_map(|event| match event {
-            PluginManagerEvent::StateSnapshot { device: id, state } if *id == device => {
-                Some(state.clone())
-            }
-            _ => None,
-        });
+    step_until(app, "the device state snapshot", |app| {
+        snapshot = app
+            .device_events()
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                PluginManagerEvent::StateSnapshot { device: id, state } if *id == device => {
+                    Some(state.clone())
+                }
+                _ => None,
+            });
         snapshot.is_some()
     });
     snapshot.unwrap()
 }
 
-fn apply_snapshot(
-    sync: &mut EngineSync,
-    doc: &mut Document,
-    device: DeviceId,
-    state: &SavedPluginState,
-) {
-    let before = Arc::clone(doc.project());
-    doc.apply("Zustand", |p| {
-        edits::set_saved_plugin_state(p, device, state)
-    })
-    .unwrap();
-    follow(sync, doc, &before);
-}
-
-fn wait_for_state(sync: &mut EngineSync, device: DeviceId) {
-    wait(sync, "the device applied the state", |_, events| {
-        events.iter().any(|event| {
+fn wait_for_state(app: &mut App, device: DeviceId) {
+    step_until(app, "the device applied the state", |app| {
+        app.device_events().iter().any(|event| {
             matches!(event, PluginManagerEvent::StateApplied { device: applied } if *applied == device)
         })
     });
@@ -112,13 +131,15 @@ fn wait_for_state(sync: &mut EngineSync, device: DeviceId) {
 
 /// Keep the live processors in offline mode, like an export. The probes render the held engine
 /// offline (`render_held`), so they wait for every bridge block instead of a deadline (#347).
-fn hold_offline(sync: &mut EngineSync, devices: &[DeviceId]) {
-    sync.hold_engine().expect("engine held");
-    sync.host_mut().set_render_mode(RenderMode::Offline);
-    wait(sync, "the processors' offline render mode", |sync, _| {
+fn hold_offline(app: &mut App, devices: &[DeviceId]) {
+    app.engine_mut().hold_engine().expect("engine held");
+    app.engine_mut()
+        .host_mut()
+        .set_render_mode(RenderMode::Offline);
+    step_until(app, "the processors' offline render mode", |app| {
         devices
             .iter()
-            .all(|&device| sync.device_status(device) == DeviceStatus::Ok)
+            .all(|&device| app.engine().device_status(device) == DeviceStatus::Ok)
     });
 }
 
@@ -157,65 +178,46 @@ fn undo_and_redo_of_clap_effect_state_reach_the_running_processor() {
         },
     )
     .unwrap();
-    let mut doc = Document::new(project);
-    let mut sync = null_sync(Box::new(host));
-    sync.sync(&doc);
-    wait(&mut sync, "the synth and limiter", |sync, _| {
+    let mut app = app_with(project, host);
+    step_until(&mut app, "the synth and limiter", |app| {
         [synth, limiter]
             .into_iter()
-            .all(|device| sync.device_status(device) == DeviceStatus::Ok)
+            .all(|device| app.engine().device_status(device) == DeviceStatus::Ok)
     });
-    wait(&mut sync, "the limiter layout", |sync, _| {
-        sync.host().native_layout(limiter).is_some()
-    });
-    let (gain, ceiling) = {
-        let ids = sync
-            .host()
-            .native_layout(limiter)
-            .unwrap()
-            .author_ids()
-            .unwrap();
-        (ids["gain"], ids["ceiling"])
-    };
-    let capture = |sync: &mut EngineSync, value: f64| {
-        assert!(sync.host_mut().set_param(limiter, ceiling, value));
-        snapshot(sync, limiter)
-    };
+    wait_for_layout(&mut app, limiter);
+    let gain = author_parameter(&app, limiter, "gain");
+    let ceiling = author_parameter(&app, limiter, "ceiling");
     // The normalized gain maximum is +24 dB. Ceiling endpoints are -12 dB and 0 dB.
-    assert!(sync.host_mut().set_param(limiter, gain, 1.0));
-    let loud = capture(&mut sync, 1.0);
-    let quiet = capture(&mut sync, 0.0);
+    let loud = edit_parameters(&mut app, limiter, (gain, 1.0), &[(ceiling, 1.0)]);
+    let quiet = edit_parameters(&mut app, limiter, (ceiling, 0.0), &[]);
     assert_ne!(loud, quiet);
-    hold_offline(&mut sync, &[synth, limiter]);
+    hold_offline(&mut app, &[synth, limiter]);
 
-    apply_snapshot(&mut sync, &mut doc, limiter, &loud);
-    wait_for_state(&mut sync, limiter);
-    let loud_peak = note_peak(&mut sync, track);
-    apply_snapshot(&mut sync, &mut doc, limiter, &quiet);
-    wait_for_state(&mut sync, limiter);
-    let quiet_peak = note_peak(&mut sync, track);
+    let quiet_peak = note_peak(&mut app, track);
     assert!(
         (0.20..=0.26).contains(&quiet_peak),
         "−12 dB ceiling: {quiet_peak}"
     );
+
+    let reloads = app.engine().device_reloads();
+    undo(&mut app);
+    wait_for_state(&mut app, limiter);
+    assert_eq!(saved_state(&app, limiter), Some(loud));
+    let loud_peak = note_peak(&mut app, track);
     assert!(
         loud_peak > quiet_peak * 1.5,
-        "loud {loud_peak}, quiet {quiet_peak}"
+        "undo: loud {loud_peak}, quiet {quiet_peak}"
     );
 
-    let reloads = sync.device_reloads();
-    undo(&mut sync, &mut doc);
-    wait_for_state(&mut sync, limiter);
-    let peak = note_peak(&mut sync, track);
-    assert!(peak > quiet_peak * 1.5, "undo: the old ceiling ({peak})");
-    redo(&mut sync, &mut doc);
-    wait_for_state(&mut sync, limiter);
-    let peak = note_peak(&mut sync, track);
+    redo(&mut app);
+    wait_for_state(&mut app, limiter);
+    assert_eq!(saved_state(&app, limiter), Some(quiet));
+    let peak = note_peak(&mut app, track);
     assert!(
         (0.20..=0.26).contains(&peak),
         "redo: the new ceiling ({peak})"
     );
-    assert_eq!(sync.device_reloads(), reloads);
+    assert_eq!(app.engine().device_reloads(), reloads);
 }
 
 #[test]
@@ -241,18 +243,18 @@ fn undo_and_redo_of_asset_links_reach_the_clap_sampler() {
     let original = write_sample("Original.wav", 0.125);
     let replacement = write_sample("Replacement.wav", 0.5);
     let links: BTreeMap<_, _> = (0..SLOTS).map(|slot| (slot, original.clone())).collect();
-    let project = edits::set_device_asset_links(&project, drums, links.clone()).unwrap();
-    let mut doc = Document::new(project);
-    let mut sync = null_sync(Box::new(host));
-    sync.sync(&doc);
-    wait(&mut sync, "the sampler pad layout", |sync, _| {
-        sync.device_status(drums) == DeviceStatus::Ok
-            && sync
+    let project = edits::set_device_asset_links(&project, drums, links).unwrap();
+    let mut app = app_with(project, host);
+    step_until(&mut app, "the sampler pad layout", |app| {
+        app.engine().device_status(drums) == DeviceStatus::Ok
+            && app
+                .engine()
                 .host()
                 .native_layout(drums)
                 .is_some_and(|layout| layout.pad_bank.is_some())
     });
-    let pads = sync
+    let pads = app
+        .engine()
         .host()
         .native_layout(drums)
         .unwrap()
@@ -262,105 +264,86 @@ fn undo_and_redo_of_asset_links_reach_the_clap_sampler() {
         .pads
         .clone();
     assert_eq!(pads.len(), SLOTS as usize);
-    hold_offline(&mut sync, &[drums]);
+    hold_offline(&mut app, &[drums]);
 
-    let expect_slots = |sync: &mut EngineSync, target: u32, expected: AssetStatus| {
-        wait(
-            sync,
+    let expect_slots = |app: &mut App, target: u32, link: Option<&AssetLink>| {
+        let expected = if link.is_some() {
+            AssetStatus::Ready
+        } else {
+            AssetStatus::Empty
+        };
+        step_until(
+            app,
             &format!("slot {target} to be {expected:?} and the rest ready"),
-            |sync, _| {
-                sync.host().asset_slots(drums).is_some_and(|snapshot| {
-                    snapshot.slots.len() == SLOTS as usize
-                        && snapshot
-                            .slots
-                            .iter()
-                            .any(|slot| slot.id == target && slot.status == expected)
-                        && snapshot
-                            .slots
-                            .iter()
-                            .all(|slot| slot.id == target || slot.status == AssetStatus::Ready)
-                })
+            |app| {
+                let device = app.project().find_device(drums).unwrap().2;
+                device.asset_links.get(&target).map(|link| &link.abs) == link.map(|link| &link.abs)
+                    && app
+                        .engine()
+                        .host()
+                        .asset_slots(drums)
+                        .is_some_and(|snapshot| {
+                            snapshot.slots.len() == SLOTS as usize
+                                && snapshot
+                                    .slots
+                                    .iter()
+                                    .any(|slot| slot.id == target && slot.status == expected)
+                                && snapshot.slots.iter().all(|slot| {
+                                    slot.id == target || slot.status == AssetStatus::Ready
+                                })
+                        })
             },
         );
     };
-    let apply_links = |sync: &mut EngineSync, doc: &mut Document, links: &BTreeMap<_, _>| {
-        let before = Arc::clone(doc.project());
-        doc.apply("Dateien", |p| {
-            edits::set_device_asset_links(p, drums, links.clone())
-        })
-        .unwrap();
-        follow(sync, doc, &before);
+    let set_slot = |app: &mut App, slot, link: Option<&AssetLink>| {
+        app.dispatch(Action::Plugin(PluginAction::SetPluginAsset {
+            device: drums,
+            slot,
+            path: link.map(|link| link.abs.clone()),
+        }));
     };
-    let peak = |sync: &mut EngineSync, key| note_peak_with_tail(sync, track, key, 256);
+    let peak = |app: &mut App, key| note_peak_with_tail(app, track, key, 256);
 
     for pad in pads {
         let slot = pad.asset_slot;
-        expect_slots(&mut sync, slot, AssetStatus::Ready);
-        let reference = peak(&mut sync, pad.note);
+        expect_slots(&mut app, slot, Some(&original));
+        let reference = peak(&mut app, pad.note);
         assert!(
             reference > 1e-3,
             "original asset in slot {slot}: {reference}"
         );
 
-        let mut cleared = links.clone();
-        assert!(cleared.remove(&slot).is_some());
-        apply_links(&mut sync, &mut doc, &cleared);
-        expect_slots(&mut sync, slot, AssetStatus::Empty);
-        undo(&mut sync, &mut doc);
-        expect_slots(&mut sync, slot, AssetStatus::Ready);
-        let restored = peak(&mut sync, pad.note);
+        set_slot(&mut app, slot, None);
+        expect_slots(&mut app, slot, None);
+        undo(&mut app);
+        expect_slots(&mut app, slot, Some(&original));
+        let restored = peak(&mut app, pad.note);
         assert!(
             (restored / reference - 1.0).abs() < 0.03,
             "undo must restore the original asset in slot {slot}: {restored} vs {reference}"
         );
-        redo(&mut sync, &mut doc);
-        expect_slots(&mut sync, slot, AssetStatus::Empty);
+        redo(&mut app);
+        expect_slots(&mut app, slot, None);
 
-        let mut relinked = cleared;
-        relinked.insert(slot, replacement.clone());
-        apply_links(&mut sync, &mut doc, &relinked);
-        expect_slots(&mut sync, slot, AssetStatus::Ready);
-        let relinked = peak(&mut sync, pad.note);
+        set_slot(&mut app, slot, Some(&replacement));
+        expect_slots(&mut app, slot, Some(&replacement));
+        let relinked = peak(&mut app, pad.note);
         assert!(
             (relinked / reference - 4.0).abs() < 0.12,
             "relink must load the replacement in slot {slot}: {relinked} vs {reference}"
         );
-        undo(&mut sync, &mut doc);
-        expect_slots(&mut sync, slot, AssetStatus::Empty);
-        redo(&mut sync, &mut doc);
-        expect_slots(&mut sync, slot, AssetStatus::Ready);
-        let redone = peak(&mut sync, pad.note);
+        undo(&mut app);
+        expect_slots(&mut app, slot, None);
+        redo(&mut app);
+        expect_slots(&mut app, slot, Some(&replacement));
+        let redone = peak(&mut app, pad.note);
         assert!(
             (redone / reference - 4.0).abs() < 0.12,
             "redo must load the replacement in slot {slot}: {redone} vs {reference}"
         );
 
-        apply_links(&mut sync, &mut doc, &links);
-        expect_slots(&mut sync, slot, AssetStatus::Ready);
-    }
-}
-
-/// Polls `sync` until `done` accepts it and the device events of that poll.
-fn wait(
-    sync: &mut EngineSync,
-    what: &str,
-    mut done: impl FnMut(&mut EngineSync, &[PluginManagerEvent]) -> bool,
-) {
-    let deadline = Instant::now() + PATIENCE;
-    loop {
-        let events: Vec<PluginManagerEvent> = sync
-            .poll()
-            .into_iter()
-            .filter_map(|e| match e {
-                SyncEvent::Device(e) => Some(e),
-                SyncEvent::Engine(_) => None,
-            })
-            .collect();
-        if done(sync, &events) {
-            return;
-        }
-        assert!(Instant::now() < deadline, "no {what}");
-        std::thread::sleep(Duration::from_millis(5));
+        set_slot(&mut app, slot, Some(&original));
+        expect_slots(&mut app, slot, Some(&original));
     }
 }
 
@@ -372,14 +355,13 @@ fn undo_and_redo_of_a_bridged_plugins_state_reach_the_plugin() {
     let dir = scratch("undo-bridge");
     let host = scan_fixture_host(&dir, &dirs);
     let (project, _, synth) = instrument_project("State sync", clap_plugin(SYNTH));
-    let mut doc = Document::new(project);
-    let mut sync = null_sync(Box::new(host));
-    sync.sync(&doc);
-    wait(&mut sync, "the plugin", |sync, _| {
-        sync.device_status(synth) == DeviceStatus::Ok
+    let mut app = app_with(project, host);
+    step_until(&mut app, "the plugin", |app| {
+        app.engine().device_status(synth) == DeviceStatus::Ok
     });
-    assert!(sync.host().bridge_pid(synth).is_some());
-    let gain = sync
+    assert!(app.engine().host().bridge_pid(synth).is_some());
+    let gain = app
+        .engine()
         .host()
         .params(synth)
         .unwrap()
@@ -388,26 +370,16 @@ fn undo_and_redo_of_a_bridged_plugins_state_reach_the_plugin() {
         .expect("a gain parameter")
         .id;
 
-    // Take both states from the plugin, then drive the running instance with the document.
-    assert!(sync.host_mut().set_param(synth, gain, 0.9));
-    let loud = snapshot(&mut sync, synth);
-    assert!(sync.host_mut().set_param(synth, gain, 0.3));
-    let quiet = snapshot(&mut sync, synth);
+    let loud = edit_parameters(&mut app, synth, (gain, 0.9), &[]);
+    let quiet = edit_parameters(&mut app, synth, (gain, 0.3), &[]);
     assert_ne!(loud, quiet);
 
-    apply_snapshot(&mut sync, &mut doc, synth, &loud);
-    wait_for_state(&mut sync, synth);
-    assert_eq!(snapshot(&mut sync, synth), loud);
-    apply_snapshot(&mut sync, &mut doc, synth, &quiet);
-    wait_for_state(&mut sync, synth);
-    assert_eq!(snapshot(&mut sync, synth), quiet);
-
-    undo(&mut sync, &mut doc);
-    wait_for_state(&mut sync, synth);
-    assert_eq!(snapshot(&mut sync, synth), loud, "undo: the old state");
-    redo(&mut sync, &mut doc);
-    wait_for_state(&mut sync, synth);
-    assert_eq!(snapshot(&mut sync, synth), quiet, "redo: the new state");
+    undo(&mut app);
+    wait_for_state(&mut app, synth);
+    assert_eq!(snapshot(&mut app, synth), loud, "undo: the old state");
+    redo(&mut app);
+    wait_for_state(&mut app, synth);
+    assert_eq!(snapshot(&mut app, synth), quiet, "redo: the new state");
 }
 
 /// A restore failure must preserve the original bytes while the user leaves the controls alone.
@@ -415,7 +387,6 @@ fn undo_and_redo_of_a_bridged_plugins_state_reach_the_plugin() {
 #[test]
 fn invalid_clap_state_survives_until_a_deliberate_edit() {
     use komponist_app::actions::DropTarget;
-    use komponist_app::{Action, App, PluginAction};
 
     let corrupted: &[u8] = b"{\"params\": {\"gain\": ";
     let mut app = App::headless(Project::new("Unreadable"));

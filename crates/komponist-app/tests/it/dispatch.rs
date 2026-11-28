@@ -1,6 +1,6 @@
 //! Central dispatch without pixels: actions in, document / view state / engine out.
 
-use std::time::{Duration, Instant};
+use crate::common::step_until;
 
 use komponist_app::actions::{SelectMode, SelectionChange};
 use komponist_app::ui_state::{DockTab, FocusArea, Panel, Tool};
@@ -17,18 +17,6 @@ fn app() -> App {
 
 fn ui(a: UiAction) -> Action {
     Action::Ui(a)
-}
-
-fn wait_for(app: &mut App, mut done: impl FnMut(&App) -> bool) -> bool {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while Instant::now() < deadline {
-        app.engine_mut().poll();
-        if done(app) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(5));
-    }
-    false
 }
 
 #[test]
@@ -51,18 +39,28 @@ fn transport_toggles_are_not_undone() {
 fn play_stop_and_go_to_start_drive_the_engine() {
     let mut a = app();
     a.dispatch(Action::Transport(TransportAction::TogglePlay));
-    assert!(wait_for(&mut a, |a| a.engine().playhead() > Tick::ZERO));
+    step_until(&mut a, "playback to advance", |a| {
+        a.engine().playhead() > Tick::ZERO
+    });
     assert_eq!(a.transport(), TransportState::Playing);
     a.dispatch(Action::Transport(TransportAction::TogglePlay));
-    assert!(wait_for(&mut a, |a| a.transport() == TransportState::Stopped));
+    step_until(&mut a, "playback to stop", |a| {
+        a.transport() == TransportState::Stopped
+    });
     // Stop while stopped: to the loop start (loop on in the demo).
     a.dispatch(Action::Transport(TransportAction::Stop));
     let start = a.project().loop_range.start;
-    assert!(wait_for(&mut a, |a| a.engine().playhead() == start));
+    step_until(&mut a, "the playhead at the loop start", |a| {
+        a.engine().playhead() == start
+    });
     a.dispatch(Action::Transport(TransportAction::Locate(Tick(960))));
-    assert!(wait_for(&mut a, |a| a.engine().playhead() == Tick(960)));
+    step_until(&mut a, "the requested playhead", |a| {
+        a.engine().playhead() == Tick(960)
+    });
     a.dispatch(Action::Transport(TransportAction::GoToStart));
-    assert!(wait_for(&mut a, |a| a.engine().playhead() == start));
+    step_until(&mut a, "the playhead at the loop start", |a| {
+        a.engine().playhead() == start
+    });
 }
 
 /// Play after a change in the same frame plays the changed document: a loop range set just before

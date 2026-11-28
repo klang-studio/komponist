@@ -258,6 +258,8 @@ fn set_host_context(factory: &ComPtr<IPluginFactory>, context: &ComWrapper<HostA
 
 /// Creates class `cid` as interface `I`.
 fn create<I: Interface>(factory: &ComPtr<IPluginFactory>, cid: &TUID) -> Option<ComPtr<I>> {
+    #[cfg(all(test, windows))]
+    let _fixture_creation = crate::lock_fixture_creation();
     let iid: TUID = I::IID.map(|b| b as std::ffi::c_char);
     let mut obj: *mut c_void = std::ptr::null_mut();
     // SAFETY: the factory's createInstance with valid ids and out-pointer.

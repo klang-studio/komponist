@@ -47,13 +47,13 @@ fn the_demo_plays_on_the_null_backend() {
     assert_eq!(program.tracks.len(), doc.project().tracks.len());
     sync.send(Command::Play);
     assert!(wait_until(|| {
-        sync.poll();
+        sync.poll_engine_events();
         sync.playhead() > Tick::ZERO
     }));
     assert_eq!(sync.telemetry().transport(), TransportState::Playing);
     sync.send(Command::Stop);
     assert!(wait_until(|| {
-        sync.poll();
+        sync.poll_engine_events();
         sync.telemetry().transport() == TransportState::Stopped
     }));
     sync.shutdown();
@@ -110,14 +110,14 @@ fn a_poisoned_engine_is_rebuilt_from_the_document() {
     assert_eq!(sync.program.rebuild_position(), None);
     // Stopped where the old engine was.
     assert!(wait_until(|| {
-        sync.poll();
+        sync.poll_engine_events();
         sync.playhead() == at
     }));
     assert_eq!(sync.transport(), TransportState::Stopped);
     // The new engine runs in the stream and plays the document from there.
     sync.send(Command::Play);
     assert!(wait_until(|| {
-        sync.poll();
+        sync.poll_engine_events();
         sync.playhead() > at
     }));
     sync.hold_engine().unwrap();
@@ -150,7 +150,7 @@ fn a_lost_engine_is_rebuilt_and_the_waiting_commands_dropped() {
     sync.send(Command::Play);
     let at = sync.playhead();
     assert!(wait_until(|| {
-        sync.poll();
+        sync.poll_engine_events();
         sync.playhead() > at
     }));
     sync.shutdown();
@@ -185,7 +185,7 @@ fn a_newer_locate_beats_the_rebuild_position() {
     sync.sync(&doc);
     sync.send(Command::Play);
     assert!(wait_until(|| {
-        sync.poll();
+        sync.poll_engine_events();
         sync.playhead() > Tick(2_000)
     }));
     let detached = sync.detach().unwrap();
@@ -199,7 +199,7 @@ fn a_newer_locate_beats_the_rebuild_position() {
     sync.sync(&doc);
     assert_eq!(sync.program.rebuild_position(), None);
     assert!(wait_until(|| {
-        sync.poll();
+        sync.poll_engine_events();
         // The position is rounded to a frame.
         (Tick(95)..=Tick(100)).contains(&sync.playhead())
     }));
@@ -346,7 +346,7 @@ fn worker_threads_follow_the_setting() {
     sync.sync(&doc);
     sync.send(Command::Play);
     assert!(wait_until(|| {
-        sync.poll();
+        sync.poll_engine_events();
         sync.worker_stats().worker_jobs() > 0
     }));
     assert_eq!(sync.set_workers(Some(0)).unwrap().unwrap().threads, 0);
@@ -363,7 +363,7 @@ fn worker_threads_follow_the_setting() {
         .is_some_and(|s| s.threads == 3)));
     let before = sync.playhead();
     assert!(wait_until(|| {
-        sync.poll();
+        sync.poll_engine_events();
         sync.playhead() > before
     }));
     sync.shutdown();
@@ -416,7 +416,7 @@ fn removed_devices_leave_the_host_and_new_ones_get_processors() {
     sync.sync(&doc);
     let lead_synth = doc.project().tracks[2].channel.devices[0].id;
     assert!(wait_until(|| {
-        sync.poll();
+        sync.poll_device_events();
         sync.device_status(lead_synth) == DeviceStatus::Ok
     }));
     let slot = sync.program().unwrap().slots.slot(lead_synth);
@@ -491,7 +491,7 @@ fn sync_reuses_full_processor_slots_after_retiring_the_old_device() {
         // Finish all initial insertions, including any program install waiting for room
         // in the command queue.
         sync.io.held_engine_mut().settle();
-        sync.poll();
+        sync.poll_engine_events();
         sync.io.held_engine_mut().settle();
         let initial_programs = sync.programs_sent();
 
@@ -564,7 +564,7 @@ fn reset_starts_the_next_project_from_scratch() {
     sync.sync(&second);
     // The verified Sampler reloads in the new document.
     assert!(wait_until(|| {
-        sync.poll();
+        sync.poll_device_events();
         sync.device_status(drums) == DeviceStatus::Ok
     }));
     // The compressor behind it is not installed: it stays missing.

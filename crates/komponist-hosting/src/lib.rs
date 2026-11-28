@@ -147,6 +147,16 @@ mod tests {
     }
 }
 
+// nice-plug's Windows fixtures share a window class namespace in the test process.
+// Class names use only a performance-counter tick, which parallel factory calls can share.
+#[cfg(all(test, windows))]
+fn lock_fixture_creation() -> std::sync::MutexGuard<'static, ()> {
+    static CREATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    CREATION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[cfg(test)]
 #[allow(dead_code)]
 #[path = "../../../scripts/test-fixtures.rs"]
