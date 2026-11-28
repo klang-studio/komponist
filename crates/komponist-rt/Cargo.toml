@@ -13,8 +13,12 @@ workspace = true
 # pthread scheduling (Linux), Mach thread policy, os_sync wait/wake (macOS).
 libc.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+# The futex of `os_sync` (thread) and its absolute CLOCK_MONOTONIC deadline (time).
+rustix = { workspace = true, features = ["time"] }
+
 [target.'cfg(windows)'.dependencies]
-# MMCSS (avrt) and the thread priority fallback.
+# MMCSS (avrt), the thread priority fallback, and WaitOnAddress / WakeByAddress* of `os_sync`.
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]

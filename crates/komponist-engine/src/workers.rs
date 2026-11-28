@@ -33,15 +33,18 @@
 //!   the callback period and join the device's audio IO workgroup when the stream has one (without
 //!   it, a lightly loaded Apple silicon Mac runs them on slow cores; spike #43), and leave it
 //!   before they end. Jobs run inside `assert_no_alloc`. Idle workers sleep in the kernel wait
-//!   (`FUTEX_WAIT`, `os_sync_wait_on_address`) with a one-second deadline, to look at the shutdown
-//!   flag. On Windows (W3) workers register with MMCSS ("Pro Audio", `TIME_CRITICAL` as the fallback)
-//!   and wait with `WaitOnAddress` (`ceil(ms)` timeouts; see `sys.rs` for why that suffices).
+//!   (`komponist_rt::os_sync`: a futex, `os_sync_wait_on_address`, `WaitOnAddress`) with a
+//!   one-second deadline, to look at the shutdown flag. On Windows (W3) workers register with MMCSS
+//!   ("Pro Audio", `TIME_CRITICAL` as the fallback); their `WaitOnAddress` has `ceil(ms)` timeouts
+//!   (see `sys.rs` for why that suffices).
 
 use std::cell::{Cell, UnsafeCell};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+use komponist_rt::os_sync::{self, Scope, WaitOutcome};
 
 use crate::sys;
 
@@ -521,7 +524,7 @@ impl Pool {
             .len()
             .min((ready.count_ones() as usize).saturating_sub(1));
         if helpers > 0 {
-            sys::wake(&s.wake.0, helpers);
+            os_sync::wake(&s.wake.0, helpers, Scope::Process);
         }
         s.stats.batches.fetch_add(1, Ordering::Relaxed);
 
@@ -557,7 +560,9 @@ impl Pool {
                 continue;
             }
             let until = *deadline.get_or_insert_with(|| Instant::now() + period);
-            if !sys::wait_while(&s.finished.0, finished, until) {
+            if os_sync::wait_while(&s.finished.0, finished, Some(until), Scope::Process)
+                == WaitOutcome::TimedOut
+            {
                 s.stats.late.fetch_add(1, Ordering::Relaxed);
                 deadline = Some(Instant::now() + period);
             }
@@ -578,7 +583,7 @@ impl Drop for Pool {
         let s = &*self.shared;
         s.shutdown.store(true, Ordering::Release);
         s.wake.0.fetch_add(1, Ordering::AcqRel);
-        sys::wake(&s.wake.0, usize::MAX);
+        os_sync::wake(&s.wake.0, os_sync::WAKE_ALL, Scope::Process);
         for handle in self.threads.drain(..) {
             let _ = handle.join();
         }
@@ -609,7 +614,12 @@ fn work(shared: &Shared, lane: usize, mut seen: u32) {
             }
             let epoch = shared.wake.0.load(Ordering::Acquire);
             if epoch == seen {
-                sys::wait_while(&shared.wake.0, seen, Instant::now() + IDLE_WAIT);
+                os_sync::wait_while(
+                    &shared.wake.0,
+                    seen,
+                    Some(Instant::now() + IDLE_WAIT),
+                    Scope::Process,
+                );
                 continue;
             }
             seen = epoch;
@@ -637,7 +647,7 @@ fn work(shared: &Shared, lane: usize, mut seen: u32) {
                 shared.stats.worker_jobs.fetch_add(1, Ordering::Relaxed);
                 let finished = shared.finished.0.fetch_add(1, Ordering::AcqRel) + 1;
                 if finished == batch.count || publisher.published.get() {
-                    sys::wake(&shared.finished.0, 1);
+                    os_sync::wake(&shared.finished.0, 1, Scope::Process);
                 }
             }
         }
@@ -658,7 +668,7 @@ mod tests {
         // `Pool::drop`, before the worker ran.
         shared.shutdown.store(true, Ordering::Release);
         shared.wake.0.fetch_add(1, Ordering::AcqRel);
-        sys::wake(&shared.wake.0, usize::MAX);
+        os_sync::wake(&shared.wake.0, os_sync::WAKE_ALL, Scope::Process);
         let worker = {
             let shared = Arc::clone(&shared);
             std::thread::spawn(move || work(&shared, 1, seen))

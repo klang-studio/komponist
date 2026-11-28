@@ -729,9 +729,9 @@ created outside the callback. For each segment:
   `fetch_and`; whoever clears it owns the job. No locks.
 - When a job finishes, it decrements the "missing inputs" counter of its dependents and publishes
   those that reach zero.
-- The audio thread works along with the workers and waits (futex on Linux, `os_sync` on macOS,
-  `WaitOnAddress` on Windows; see `sys.rs`) only for jobs another thread already owns. A late job is
-  counted, never abandoned or run twice.
+- The audio thread works along with the workers and waits (`komponist_rt::os_sync`: futex on Linux,
+  `os_sync_wait_on_address` on macOS, `WaitOnAddress` on Windows) only for jobs another thread
+  already owns. A late job is counted, never abandoned or run twice.
 - Short segments (`< 32` frames), single jobs and `worker_threads = 0` use the serial path. Serial
   and parallel output are bit-identical, which tests check.
 
@@ -897,8 +897,9 @@ ExternalProcessor::process                                      |
  |           the stale result is ignored by its sequence number |
 ```
 
-The wait is a futex on Linux (`memfd` shared memory), shared-address waits on macOS, and events plus
-a high-resolution timer on Windows ([`signal.rs`](../crates/komponist-ipc/src/signal.rs)).
+The wait is a shared futex on Linux (`memfd` shared memory) and a shared-address wait on macOS, both
+through [`os_sync`](../crates/komponist-rt/src/os_sync.rs), and events plus a high-resolution timer
+on Windows ([`signal.rs`](../crates/komponist-ipc/src/signal.rs)).
 
 `begin` is the trick that hides the cross-process cost: the engine calls it for instruments at the
 head of a chain as soon as their notes for the segment are known, then processes other tracks while
