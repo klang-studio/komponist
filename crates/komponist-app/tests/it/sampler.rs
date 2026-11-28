@@ -15,7 +15,6 @@ use egui::{Event, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{SelectMode, SelectionChange, TransportAction};
-use komponist_app::device_host::PluginHost;
 use komponist_app::ui_state::{DockTab, StepCursor};
 use komponist_app::{Action, App, PluginAction, ProjectAction, UiAction};
 use komponist_audiofile::fixtures as testkit;
@@ -26,6 +25,7 @@ use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{DeviceId, Project, Tick, TickRange, TrackId, persist};
 use komponist_plugin_api::device_assets::AssetStatus;
 use komponist_plugins::DeviceStatus;
+use komponist_session::device_host::PluginHost;
 
 /// The first of the sampler bundle's eight pad notes. `show_authored_pads` checks it against the
 /// bundle's own pad bank.
@@ -173,7 +173,7 @@ fn the_general_sampler_exports_a_tempo_synced_note_from_the_first_beat() {
     use komponist_model::time::Tempo;
 
     const PLUGIN: &str = "org.klang-studio.komponist.general-sampler";
-    let host = App::headless_plugin_host();
+    let host = komponist_session::device_host::PluginHost::headless_fixture();
     if common::shipped_plugin(&host, PLUGIN).is_none() {
         assert_ne!(
             std::env::var("KOMPONIST_REQUIRE_FIXTURES").as_deref(),

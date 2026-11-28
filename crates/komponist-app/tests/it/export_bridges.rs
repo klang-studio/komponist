@@ -9,13 +9,13 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use komponist_app::actions::{ExportRange, ExportSettings};
-use komponist_app::device_host::PluginHost;
 use komponist_app::settings;
 use komponist_app::{Action, EditAction, ProjectAction, TransportAction};
 use komponist_engine::TransportState;
 use komponist_engine::export::ExportJob;
 use komponist_model::{ClipContent, Project, Tick, TickRange};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
+use komponist_session::device_host::PluginHost;
 
 const BAR: i64 = 3840;
 
@@ -48,10 +48,10 @@ fn read(path: &std::path::Path) -> (hound::WavSpec, Vec<f32>) {
 
 fn scanned_host(dir: &std::path::Path, dirs: &komponist_plugins::PluginDirs) -> PluginHost {
     let mut host = PluginHost::new(config(dir));
-    komponist_app::device_host::PluginCatalogHost::start_scan(&mut host, dirs);
+    komponist_session::device_host::PluginCatalogHost::start_scan(&mut host, dirs);
     let deadline = Instant::now() + PATIENCE;
     'scan: loop {
-        for event in komponist_app::device_host::ProcessorHost::poll(&mut host) {
+        for event in komponist_session::device_host::ProcessorHost::poll(&mut host) {
             if matches!(event, PluginManagerEvent::ScanFinished(_)) {
                 break 'scan;
             }

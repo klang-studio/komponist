@@ -82,7 +82,7 @@ pub(crate) fn automation_controls(
 /// The current engine override or timeline value shared by views and edits.
 pub(crate) fn automation_control_value(
     project: &Project,
-    engine: &crate::engine_sync::EngineSync,
+    engine: &komponist_session::engine_sync::EngineSync,
     owner: AutomationOwner,
     target: &AutomationTarget,
 ) -> Option<f32> {

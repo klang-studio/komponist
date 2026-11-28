@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use common::*;
 use komponist_app::App;
-use komponist_app::device_host::PluginHost;
+use komponist_session::device_host::PluginHost;
 
 /// The demo with test plugins, scanned and loaded: every bridge running.
 fn loaded_app(name: &str) -> Option<App> {

@@ -122,7 +122,7 @@ pub(crate) fn value(ctx: &ViewCtx<'_>, track: &Track, index: u8) -> f32 {
 
 pub(crate) fn effective_value(
     project: &komponist_model::Project,
-    engine: &crate::engine_sync::EngineSync,
+    engine: &komponist_session::engine_sync::EngineSync,
     track: &Track,
     index: u8,
 ) -> f32 {

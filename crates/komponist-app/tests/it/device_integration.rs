@@ -737,7 +737,7 @@ fn the_limiter_meter_shows_the_reduction_the_engine_measured() {
 
 #[test]
 fn the_fm_display_draws_the_real_routing_for_algorithm_zero() {
-    let host = App::headless_plugin_host();
+    let host = komponist_session::device_host::PluginHost::headless_fixture();
     let prepared = host
         .manager()
         .prepare_bundled_device(
@@ -799,7 +799,7 @@ fn snapshot_of_a_touched_parameter_with_its_context_menu() {
 fn snapshot_free_routing(name: &str, expected: [u8; 6]) {
     use komponist_model::Hue;
 
-    let host = App::headless_plugin_host();
+    let host = komponist_session::device_host::PluginHost::headless_fixture();
     let prepared = host
         .manager()
         .prepare_bundled_device("org.klang-studio.komponist.hexa", Some("Init"), &[], &[])

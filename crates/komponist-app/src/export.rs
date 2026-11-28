@@ -10,7 +10,7 @@
 //!    waits; it goes on by itself when all run, or at once with "Ohne sie exportieren". Linked sample files that
 //!    cannot be loaded stop the export and are named in the status message.
 //! 3. **Detach**: the document is synced, the engine leaves the stream together with its handle
-//!    ([`EngineSync::detach`](crate::engine_sync::EngineSync::detach)), the bridges switch to
+//!    ([`EngineSync::detach`](komponist_session::engine_sync::EngineSync::detach)), the bridges switch to
 //!    offline processing through [`OfflineRenderHost::set_render_mode`], and a worker thread
 //!    takes engine, program and job.
 //! 4. **Worker**: sets the export rate when it differs from the device's
@@ -62,16 +62,16 @@ use komponist_plugins::{DeviceStatus, FailReason};
 
 use crate::actions::{Action, BitDepth, ExportRange, ExportSettings, ProjectAction, UiAction};
 use crate::app::App;
-use crate::device_host::OfflineRenderHost;
 use crate::dialogs::Overlay;
 use crate::dialogs::export::{
     self as view, DeviceRow, DeviceState, Output, ProgressView, SettingsView, Stage,
 };
 use crate::dialogs::file::{FileBrowser, Purpose};
-use crate::engine_sync::DetachedEngine;
 use crate::ui_state::{
     Dialog, ExportDialog, ExportProgress, ExportStage, StatusKind, StatusMessage,
 };
+use komponist_session::device_host::OfflineRenderHost;
+use komponist_session::engine_sync::DetachedEngine;
 
 mod flatten;
 use flatten::Flatten;

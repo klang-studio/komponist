@@ -9,10 +9,20 @@ use komponist_i18n::Lang;
 use komponist_model::automation::{AutomationOwner, LaneId};
 use komponist_model::{Project, Tick};
 
-use crate::engine_sync::DraftOverlay;
 use crate::record::{Commit, Recording};
 use audio_record::AudioRecording;
 use automation_capture::AutomationCapture;
+use komponist_session::engine_sync::{AutomationDraft, DraftOverlay};
+
+impl AutomationDraft for AutomationCapture {
+    fn completed_revision(&self) -> u64 {
+        self.completed_revision()
+    }
+
+    fn apply(&self, project: &Project) -> komponist_model::edits::EditResult {
+        self.apply(project)
+    }
+}
 
 #[derive(Default)]
 pub(crate) struct RecordingController {

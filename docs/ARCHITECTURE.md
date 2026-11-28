@@ -142,12 +142,13 @@ Their READMEs record provenance.
 | [`komponist-tokens`](../crates/komponist-tokens/README.md) | Generated design tokens, colour conversion and embedded font assets |
 | [`komponist-i18n`](../crates/komponist-i18n/README.md) | Generated typed DE/EN text catalog from Fluent sources |
 | [`komponist-ui`](../crates/komponist-ui/README.md) | Shared egui theme, widgets, canvases, plugin-frame header, gallery |
-| [`komponist-app`](../crates/komponist-app/README.md) | Application shell, actions/keymap, views/dialogs, document/engine synchronization, project IO |
+| [`komponist-session`](../crates/komponist-session/src/lib.rs) | Headless document/engine synchronization, audio and MIDI I/O, device host capabilities |
+| [`komponist-app`](../crates/komponist-app/README.md) | Application shell, actions/keymap, views/dialogs, project IO |
 
 `komponist-model` uses `komponist-tokens` for parameter layout geometry and receives localized
 names as arguments.
 The engine knows neither egui nor IPC nor CLAP/VST3. `komponist-audio` defines an `AudioProcess`
-callback interface without depending on the engine; the app supplies the adapter.
+callback interface without depending on the engine; the session crate supplies the adapter.
 `komponist-device-core` uses the model, i18n catalog, `komponist-processor` interfaces and shared device math.
 The Rust author SDK reaches the processor contracts through `komponist-device-core`.
 The UI computes device pixel geometry from design tokens. Individual device crates build on the device-core API and are dependencies of their respective CLAP
@@ -298,7 +299,8 @@ particular device run with the device or its bundle. The metronome belongs to th
 
 `compile::build` converts a project into a `Program`: sorted sequencer data, processor slots,
 audio plans, routing, gates and latency information. Compilation runs outside the callback,
-reuses unchanged shared data and performs no audio-file IO. Within `EngineSync`, `ProgramSync`
+reuses unchanged shared data and performs no audio-file IO. In `komponist-session`,
+`EngineSync` coordinates the program publisher and audio/MIDI I/O. `ProgramSync`
 owns the last program sent, processor slot changes and the device host. `EngineIo` owns the
 audio stream, MIDI ports, and the command and event queues. The program publisher uses the
 I/O queue for processor insertions, program installation and processor removals, in that order.
@@ -306,10 +308,10 @@ I/O queue for processor insertions, program installation and processor removals,
 The compiler reads runtime metadata through `ProcessorHost` and live parameter metadata through
 `ParameterHost`. `DeviceStateHost` defines snapshot capture and restore. Catalog lookup and scans,
 presets, linked assets, offline preparation, plugin windows, and device presentation have their
-own traits. The app stores them together as a `DeviceHost`. The offline render and plugin window
+own traits. `ProgramSync` stores them together as a `DeviceHost`. The offline render and plugin window
 controllers accept their own capability, and step rows read only device presentation.
 
-Compilation never fails: what the engine cannot play is left out of the program. The app compiles
+Compilation never fails: what the engine cannot play is left out of the program. `ProgramSync` compiles
 with `compile::build_with_diagnostics`, which also returns one `Diagnostic` per left-out track or
 device (position, id and reason: track, MIDI-effect or slot limit, duplicate id, a device in the
 wrong place or on a chain that takes effects only), in project order (#92). `EngineSync` keeps the
@@ -934,7 +936,8 @@ changes use continuous values. Source recovery/relink and tempo analysis share f
 
 ### 9.3 Application shell (`komponist-app`)
 
-`App` coordinates the document, UI state, `EngineSync`, and the session controllers.
+`App` owns the document from `komponist-model` and coordinates UI state,
+`komponist-session::engine_sync::EngineSync`, and the application controllers.
 The recording controller owns the count-in, MIDI and audio takes, and automation capture.
 The export controller owns the render lifecycle and export history. Plugin frame state owns
 window focus and bridge activation. The audio settings controller runs driver and device
@@ -944,8 +947,8 @@ UI/plugin operations. `EngineSync` invalidates program compilation when the I/O 
 sample-rate or MIDI port change. On engine replacement it also forgets the last program, so the
 next sync reinstalls processors and restores the playhead using the new tempo map.
 Playback sync sends fast commands for ongoing gestures and tracks both the document revision and the revisions of completed automation
-segments. It applies those segments as a draft over the current document, including passes
-waiting for the audio writer. The draft enters the document and its undo history when the
+segments. The recording controller supplies completed passes as an `AutomationDraft`, including
+passes waiting for the audio writer. Playback sync composes them over the current document. The draft enters the document and its undo history when the
 take commits.
 Discarding the take removes its draft and restores playback from the document.
 The layout combines transport, browser, arrangement, inspector, resizable dock and status bar.

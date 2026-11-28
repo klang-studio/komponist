@@ -412,7 +412,7 @@ fn random_edits_during_playback_cause_no_xrun() {
     let mut rng = Rng(seed);
 
     let (midi, receiver) = TestMidiSource::new();
-    let host = App::headless_plugin_host();
+    let host = komponist_session::device_host::PluginHost::headless_fixture();
     let Some(hexa) = common::shipped_plugin(&host, HEXA) else {
         assert!(
             !std::env::var_os("KOMPONIST_REQUIRE_FIXTURES").is_some_and(|value| value == "1"),

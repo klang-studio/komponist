@@ -22,10 +22,10 @@ use std::time::Duration;
 
 use common::{app_with, config, scratch};
 use frame_gui::*;
-use komponist_app::device_host::PluginHost;
 use komponist_model::PluginFormat;
 use komponist_model::fixtures::empty_project;
 use komponist_plugins::PluginDirs;
+use komponist_session::device_host::PluginHost;
 
 #[test]
 #[ignore = "GUI: run under Xvfb with KP_GUI_TESTS=1; needs Klopfer, Surge XT and Dexed"]

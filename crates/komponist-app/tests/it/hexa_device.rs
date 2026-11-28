@@ -71,7 +71,7 @@ fn app_with_hexa(preset: &str) -> (App, DeviceId) {
 }
 
 fn app_with_hexa_edits(preset: &str, edits: &[(&str, f64)]) -> (App, DeviceId) {
-    let host = App::headless_plugin_host();
+    let host = komponist_session::device_host::PluginHost::headless_fixture();
     let prepared = host
         .manager()
         .prepare_bundled_device("org.klang-studio.komponist.hexa", Some(preset), edits, &[])

@@ -13,12 +13,7 @@ use egui::{Key, Modifiers, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::SettingsAction;
-use komponist_app::device_host::{
-    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
-    PluginCatalogHost, PluginHost, PluginWindowHost, PresetHost, ProcessorHost,
-};
 use komponist_app::dialogs::{missing_plugins, new_project, settings, start};
-use komponist_app::engine_sync::EngineSync;
 use komponist_app::project_io::{self, RecentList};
 use komponist_app::settings::{Language, Settings};
 use komponist_app::ui_state::{Dialog, FocusArea, Screen, SettingsSection, StartView};
@@ -31,6 +26,11 @@ use komponist_model::fixtures::demo_project;
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginFormat, PluginRef, Project};
 use komponist_plugins::{Catalog, DeviceStatus, MissingPlugin, PluginManagerEvent, ProcessorSetup};
 use komponist_processor::Processor;
+use komponist_session::device_host::{
+    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
+    PluginCatalogHost, PluginHost, PluginWindowHost, PresetHost, ProcessorHost,
+};
+use komponist_session::engine_sync::EngineSync;
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;
@@ -67,7 +67,9 @@ fn harness(app: App) -> Harness<'static, App> {
 fn app_in(dir: &Path, project: Project) -> App {
     let mut settings = Settings::default();
     settings.audio.host = HostKind::Null;
-    let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let engine = EngineSync::null(Box::new(
+        komponist_session::device_host::PluginHost::headless_fixture(),
+    ));
     App::new(
         Document::new(project),
         engine,
@@ -397,7 +399,7 @@ fn opening_a_project_resets_the_engine() {
     let dir = scratch("reset");
     let log = Arc::new(Mutex::new(Vec::new()));
     let host = Recording {
-        inner: App::headless_plugin_host(),
+        inner: komponist_session::device_host::PluginHost::headless_fixture(),
         log: Arc::clone(&log),
     };
     let mut app =
@@ -411,7 +413,7 @@ fn opening_a_project_resets_the_engine() {
                 hue: None,
                 instrument: Some(
                     crate::common::shipped_plugin(
-                        &App::headless_plugin_host(),
+                        &komponist_session::device_host::PluginHost::headless_fixture(),
                         "org.klang-studio.komponist.hexa",
                     )
                     .expect("build the Hexa fixture with scripts/build-test-plugins.sh"),
@@ -558,7 +560,7 @@ fn recording_into_a_saved_project(dir: &Path) -> (Harness<'static, App>, PathBuf
             hue: None,
             instrument: Some(
                 crate::common::shipped_plugin(
-                    &App::headless_plugin_host(),
+                    &komponist_session::device_host::PluginHost::headless_fixture(),
                     "org.klang-studio.komponist.hexa",
                 )
                 .expect("build the Hexa fixture with scripts/build-test-plugins.sh"),
@@ -951,7 +953,7 @@ fn s06_waits_for_the_running_scan() {
     save_and_open(&file, &project);
     let scanning = Arc::new(Mutex::new(true));
     let host = Scanning {
-        inner: App::headless_plugin_host(),
+        inner: komponist_session::device_host::PluginHost::headless_fixture(),
         scanning: Arc::clone(&scanning),
         finished: false,
     };
@@ -1138,8 +1140,8 @@ fn without_a_device_play_is_off_and_s07_offers_a_retry() {
     };
     let (engine, started) = EngineSync::new(
         &config,
-        komponist_app::engine_sync::MidiSetup::None,
-        Box::new(App::headless_plugin_host()),
+        komponist_session::engine_sync::MidiSetup::None,
+        Box::new(komponist_session::device_host::PluginHost::headless_fixture()),
     );
     assert!(started.is_err());
     let settings = Settings {
@@ -1454,8 +1456,8 @@ fn snapshot_of_s07() {
         };
         let (engine, _) = EngineSync::new(
             &config,
-            komponist_app::engine_sync::MidiSetup::None,
-            Box::new(App::headless_plugin_host()),
+            komponist_session::engine_sync::MidiSetup::None,
+            Box::new(komponist_session::device_host::PluginHost::headless_fixture()),
         );
         let app = App::new(
             Document::new(demo_project()),
@@ -1492,8 +1494,8 @@ fn snapshot_of_s07_in_english() {
     };
     let (engine, _) = EngineSync::new(
         &config,
-        komponist_app::engine_sync::MidiSetup::None,
-        Box::new(App::headless_plugin_host()),
+        komponist_session::engine_sync::MidiSetup::None,
+        Box::new(komponist_session::device_host::PluginHost::headless_fixture()),
     );
     let app = App::new(
         Document::new(demo_project()),
@@ -1708,7 +1710,9 @@ fn snapshots_of_the_appearance_section() {
         (Lang::De, "dialogs-s07-display-1x"),
         (Lang::En, "dialogs-s07-display-en-1x"),
     ] {
-        let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
+        let engine = EngineSync::null(Box::new(
+            komponist_session::device_host::PluginHost::headless_fixture(),
+        ));
         let app = App::new(
             Document::new(demo_project()),
             engine,

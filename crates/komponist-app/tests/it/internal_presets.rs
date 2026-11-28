@@ -100,7 +100,7 @@ fn presets(app: &App, device: DeviceId) -> &[ClapPreset] {
 fn loaded(app: &App, device: DeviceId) -> Option<(&str, bool)> {
     let model = app.project().find_device(device).unwrap().2;
     let presets = presets(app, device);
-    komponist_app::device_host::selected_preset(model, presets)
+    komponist_session::device_host::selected_preset(model, presets)
         .map(|(index, edited)| (presets[index].name.as_str(), edited))
 }
 
@@ -195,7 +195,7 @@ fn loading_a_preset_is_one_undo_step_and_the_engine_follows_it_and_its_undo() {
 fn loading_a_preset_stores_the_factory_state_and_an_unknown_source_changes_nothing() {
     let (mut app, _, limiter) = app_with("limiter");
     let preset = presets(&app, limiter)[1].clone();
-    let expected = App::headless_plugin_host()
+    let expected = komponist_session::device_host::PluginHost::headless_fixture()
         .manager()
         .prepare_bundled_device(&preset.plugin_id, Some(&preset.name), &[], &[])
         .unwrap()
@@ -332,7 +332,7 @@ fn a_saved_modified_preset_reopens_with_its_mark_not_the_start_preset() {
     use komponist_model::edits::{self, NewTrack};
 
     const HEXA: &str = "org.klang-studio.komponist.hexa";
-    let host = App::headless_plugin_host();
+    let host = komponist_session::device_host::PluginHost::headless_fixture();
     let prepare = |preset| {
         host.manager()
             .prepare_bundled_device(HEXA, preset, &[], &[])
@@ -456,7 +456,7 @@ fn snapshot_of_the_eq_head_with_the_open_preset_dropdown() {
     let preset = &presets(&defaults, device)[2].name;
     let output = author_parameter(&defaults, device, "out");
     let value = author_wire_value(&defaults, device, output, 1.5);
-    let host = App::headless_plugin_host();
+    let host = komponist_session::device_host::PluginHost::headless_fixture();
     let prepared = host
         .manager()
         .prepare_bundled_device(

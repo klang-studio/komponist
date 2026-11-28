@@ -52,7 +52,7 @@ pub mod surf;
 
 /// Builds the demo from the authenticated installed plugins and generates its audio assets.
 pub fn bundled_demo(
-    host: &crate::device_host::PluginHost,
+    host: &komponist_session::device_host::PluginHost,
     kit_dir: &Path,
 ) -> Result<Project, String> {
     std::fs::create_dir_all(kit_dir).map_err(|error| error.to_string())?;
@@ -122,7 +122,7 @@ const CHORDS: [[u8; 3]; 8] = [
 const CHORD_VELOCITY: u8 = 84;
 
 fn prepare_device(
-    host: &crate::device_host::PluginHost,
+    host: &komponist_session::device_host::PluginHost,
     suffix: &str,
     preset: Option<&str>,
     edits: &[(&str, f64)],
@@ -135,7 +135,7 @@ fn prepare_device(
 
 /// Allocates device IDs and retains the authored automation bindings used in the song.
 struct Devices<'a> {
-    host: &'a crate::device_host::PluginHost,
+    host: &'a komponist_session::device_host::PluginHost,
     next: u64,
     targets: BTreeMap<(DeviceId, String), (ParamId, f32)>,
 }
@@ -174,7 +174,10 @@ impl Devices<'_> {
     }
 }
 
-fn build(host: &crate::device_host::PluginHost, kit_dir: &Path) -> Result<Project, String> {
+fn build(
+    host: &komponist_session::device_host::PluginHost,
+    kit_dir: &Path,
+) -> Result<Project, String> {
     let mut project = demo_song();
     let mut d = Devices {
         host,

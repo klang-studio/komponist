@@ -18,8 +18,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use komponist_app::App;
-use komponist_app::device_host::{PluginCatalogHost, PluginHost, ProcessorHost};
-use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::settings::Settings;
 use komponist_audio::{HostKind, StreamConfig};
 use komponist_model::edits::{self, NewTrack};
@@ -28,6 +26,8 @@ use komponist_model::{
     Device, DeviceId, DeviceRole, Document, PluginFormat, PluginRef, Project, TrackId,
 };
 use komponist_plugins::{DeviceStatus, PluginDirs, PluginManagerConfig, PluginManagerEvent};
+use komponist_session::device_host::{PluginCatalogHost, PluginHost, ProcessorHost};
+use komponist_session::engine_sync::{EngineSync, MidiSetup};
 
 /// How long loading, scans and answers may take on a loaded machine.
 pub const PATIENCE: Duration = Duration::from_secs(30);

@@ -6,17 +6,16 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use komponist_app::App;
-use komponist_app::device_host::{
-    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
-    PluginCatalogHost, PluginHost, PluginWindowHost, PresetHost, ProcessorHost,
-};
 use komponist_ipc::{PluginDescriptor, PluginFormat as BundleFormat, PluginKind};
 use komponist_model::{Device, DeviceId, DeviceRole, PluginFormat, PluginRef};
 use komponist_plugin_api::params::param_flags;
 use komponist_plugin_api::params::{ParamInfo, ParamValue};
 use komponist_plugins::{Catalog, DeviceStatus, PluginManagerEvent, ProcessorSetup};
 use komponist_processor::Processor;
+use komponist_session::device_host::{
+    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
+    PluginCatalogHost, PluginHost, PluginWindowHost, PresetHost, ProcessorHost,
+};
 
 /// Statuses the test can change while the app runs.
 pub type Statuses = Arc<Mutex<HashMap<DeviceId, DeviceStatus>>>;
@@ -58,7 +57,7 @@ pub fn descriptor(id: &str, name: &str, kind: PluginKind, features: &[&str]) -> 
 
 /// The shipped device inventory and scripted external plugins of S01/S05.
 pub fn screens_catalog() -> Catalog {
-    let host = App::headless_plugin_host();
+    let host = komponist_session::device_host::PluginHost::headless_fixture();
     catalog_with_screens(host.catalog())
 }
 
@@ -153,7 +152,7 @@ pub fn param(id: u32, name: &str, default: f64) -> ParamInfo {
 impl FakeHost {
     /// A host with [`screens_catalog`].
     pub fn new() -> FakeHost {
-        let bundled = App::headless_plugin_host();
+        let bundled = komponist_session::device_host::PluginHost::headless_fixture();
         FakeHost {
             catalog: catalog_with_screens(bundled.catalog()),
             bundled: Some(bundled),

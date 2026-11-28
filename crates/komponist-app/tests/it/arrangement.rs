@@ -11,16 +11,16 @@ use egui::{Event, Modifiers, PointerButton, Pos2, Rect, pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{SelectMode, SelectionChange};
-use komponist_app::device_host::{
-    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
-    PluginCatalogHost, PluginHost, PluginWindowHost, PresetHost, ProcessorHost,
-};
 use komponist_app::ui_state::FocusArea;
 use komponist_app::{Action, App, EditAction, TransportAction, UiAction};
 use komponist_i18n::{Lang, de};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{ClipId, Device, DeviceId, DeviceRole, PluginRef, Project, Tick, TrackId};
 use komponist_processor::Processor;
+use komponist_session::device_host::{
+    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
+    PluginCatalogHost, PluginHost, PluginWindowHost, PresetHost, ProcessorHost,
+};
 
 use crate::common::song_with_shipped_instruments;
 use komponist_plugins::{DeviceStatus, PluginManagerEvent, ProcessorSetup};
@@ -110,7 +110,9 @@ fn hexa(app: &App) -> PluginRef {
 }
 
 fn demo() -> App {
-    App::headless(song_with_shipped_instruments(&App::headless_plugin_host()))
+    App::headless(song_with_shipped_instruments(
+        &komponist_session::device_host::PluginHost::headless_fixture(),
+    ))
 }
 
 fn project(h: &Harness<'_, App>) -> Project {
@@ -233,7 +235,9 @@ fn undo(h: &mut Harness<'_, App>) {
 
 /// The S01 state: Lead A open in the piano roll, playhead at 10.2.120, every device installed.
 fn s01() -> App {
-    let mut app = demo().with_device_host(Box::new(AllInstalled(App::headless_plugin_host())));
+    let mut app = demo().with_device_host(Box::new(AllInstalled(
+        komponist_session::device_host::PluginHost::headless_fixture(),
+    )));
     let lead = app.project().tracks[2].clone();
     app.dispatch(Action::Ui(UiAction::OpenClip(lead.clips[0].id)));
     app.dispatch(Action::Transport(TransportAction::Locate(Tick(36_000))));
@@ -2012,7 +2016,9 @@ fn opening_an_offscreen_automation_lane_reveals_its_drop_target() {
     use komponist_model::automation::{AutomationOwner, AutomationTarget};
     use komponist_model::edits::{self, TrackProp};
 
-    let project = song_with_shipped_instruments(&App::headless_plugin_host());
+    let project = song_with_shipped_instruments(
+        &komponist_session::device_host::PluginHost::headless_fixture(),
+    );
     let tracks: Vec<_> = project.tracks.iter().map(|track| track.id).collect();
     let &track = tracks.last().unwrap();
     let project = edits::set_track_prop(&project, &tracks, TrackProp::Height(150)).unwrap();

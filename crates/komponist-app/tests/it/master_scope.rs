@@ -11,7 +11,6 @@ use egui::{Key, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::SettingsAction;
-use komponist_app::engine_sync::EngineSync;
 use komponist_app::keymap::Keymap;
 use komponist_app::master_scope::MasterDisplay;
 use komponist_app::meters::Meters;
@@ -25,6 +24,7 @@ use komponist_i18n::{Lang, de, en};
 use komponist_model::fixtures::demo_project;
 use komponist_model::{Document, Project};
 use komponist_processor::{SampleTap, tap};
+use komponist_session::engine_sync::EngineSync;
 use komponist_tokens::{size, space};
 
 fn snapshot_dir() -> PathBuf {
@@ -44,7 +44,9 @@ fn harness(app: App) -> Harness<'static, App> {
 
 /// The demo on the null backend, saving its settings to `path`.
 fn app_saving_to(path: &std::path::Path, settings: Settings) -> App {
-    let engine = EngineSync::null(Box::new(App::headless_plugin_host()));
+    let engine = EngineSync::null(Box::new(
+        komponist_session::device_host::PluginHost::headless_fixture(),
+    ));
     App::new(
         Document::new(demo_project()),
         engine,

@@ -32,6 +32,7 @@ undocumented_unsafe_blocks = "warn"
 komponist-tokens = { path = "crates/komponist-tokens" }
 komponist-model = { path = "crates/komponist-model" }
 komponist-device-dsp = { path = "crates/komponist-device-dsp" }
+komponist-session = { path = "crates/komponist-session" }
 komponist-engine = { path = "crates/komponist-engine" }
 komponist-processor = { path = "crates/komponist-processor" }
 komponist-audio = { path = "crates/komponist-audio" }

@@ -8,7 +8,6 @@ use egui::{Event, Modifiers, PointerButton, Pos2, pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{EditAction, SelectMode, SelectionChange};
-use komponist_app::device_host::PluginHost;
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, PluginAction, UiAction};
 use komponist_i18n::Lang;
@@ -18,6 +17,7 @@ use komponist_model::{ChannelRef, DeviceId, DeviceRole, Project, TrackId};
 use komponist_plugin_api::device_assets::AssetStatus;
 use komponist_plugin_api::waveform_markers::{Edit, Request, SliceOptions};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
+use komponist_session::device_host::PluginHost;
 
 use crate::common::{
     FX, PATIENCE, app_with, clap_plugin, config, native_fixture, scratch, step_until,

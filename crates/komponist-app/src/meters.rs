@@ -16,10 +16,10 @@ use komponist_plugins::signal_taps::SignalTap;
 use komponist_processor::{DeviceMeter, SampleTap};
 use komponist_ui::widgets::meter::{MeterState, fraction};
 
-use crate::engine_sync::EngineSync;
 use crate::gain_trace::{self, Dynamics};
 use crate::master_scope::MasterScope;
 use crate::spectrum::{Analysis, SpectrumAnalyzer};
+use komponist_session::engine_sync::EngineSync;
 
 /// The largest gain reduction the display scale shows by default (the GR bar is full at this many
 /// dB).

@@ -15,13 +15,13 @@ use std::time::{Duration, Instant};
 use assert_no_alloc::assert_no_alloc;
 use common::*;
 use komponist_app::actions::{PluginAction, ProjectAction, TransportAction};
-use komponist_app::device_host::{DeviceHost, PluginCatalogHost, PluginHost, ProcessorHost};
 use komponist_app::ui_state::StatusKind;
 use komponist_app::{Action, App};
 use komponist_engine::compile::{self, CompileEnv};
 use komponist_engine::{Command, Engine, EngineConfig, MAX_BLOCK, MidiPort, Program};
 use komponist_model::{DeviceId, DeviceRole, Project, Tick, TrackId, persist};
 use komponist_plugins::{DeviceStatus, FailReason, PluginDirs, PluginManagerEvent, ProcessorSetup};
+use komponist_session::device_host::{DeviceHost, PluginCatalogHost, PluginHost, ProcessorHost};
 
 const RATE: f32 = 48_000.0;
 
@@ -590,7 +590,7 @@ fn standalone_clap_preset_selection_follows_loads_reports_and_saving() {
     let shown = |app: &App| {
         let model = app.project().find_device(device).unwrap().2;
         let presets = app.engine().host().clap_presets(model);
-        komponist_app::device_host::selected_preset(model, presets)
+        komponist_session::device_host::selected_preset(model, presets)
             .map(|(index, modified)| (presets[index].display_name("de").to_owned(), modified))
     };
     let shows = |name: &str, modified: bool| Some((name.to_owned(), modified));

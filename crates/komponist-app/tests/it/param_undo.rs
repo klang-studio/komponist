@@ -19,7 +19,6 @@ use egui::{Event, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::kittest::Queryable as _;
 use egui_kittest::{Harness, SnapshotOptions};
 use komponist_app::actions::{DropTarget, SelectMode, SelectionChange};
-use komponist_app::device_host::PluginHost;
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, App, EditAction, PluginAction, ProjectAction, UiAction};
 use komponist_audiofile::fixtures as testkit;
@@ -28,6 +27,7 @@ use komponist_model::edits::{self, NewDevice, NewTrack};
 use komponist_model::plugin_assets::AssetLink;
 use komponist_model::{ChannelRef, DeviceId, Project, TrackId};
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
+use komponist_session::device_host::PluginHost;
 
 const W: f32 = 1920.0;
 const H: f32 = 1080.0;
@@ -118,7 +118,7 @@ fn hold(app: &mut App) {
 }
 
 fn hexa_app(preset: &str) -> (App, TrackId, DeviceId) {
-    let host = App::headless_plugin_host();
+    let host = komponist_session::device_host::PluginHost::headless_fixture();
     let prepared = host
         .manager()
         .prepare_bundled_device("org.klang-studio.komponist.hexa", Some(preset), &[], &[])
@@ -210,7 +210,7 @@ fn a_preset_and_a_discrete_edit_are_separate_undo_steps() {
         let device = app.project().find_device(synth).unwrap().2;
         let host = app.engine().host();
         let inventory = host.clap_presets(device);
-        let (index, _) = komponist_app::device_host::selected_preset(device, inventory)?;
+        let (index, _) = komponist_session::device_host::selected_preset(device, inventory)?;
         Some(inventory[index].name.clone())
     };
     let original_preset = preset_name(&app);

@@ -206,9 +206,11 @@ mod tests {
 
     #[test]
     fn the_template_has_a_sampler_beat_and_two_hexa_tracks() {
-        let host = crate::app::App::headless_plugin_host();
-        let (drums, hexa) =
-            template_instruments(crate::device_host::PluginCatalogHost::catalog(&host)).unwrap();
+        let host = komponist_session::device_host::PluginHost::headless_fixture();
+        let (drums, hexa) = template_instruments(
+            komponist_session::device_host::PluginCatalogHost::catalog(&host),
+        )
+        .unwrap();
         let p = template(Lang::De, drums.clone(), hexa.clone());
         assert_eq!(p.name, "Beat-Skizze");
         assert_eq!(template(Lang::En, drums, hexa).name, "Beat Sketch");

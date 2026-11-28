@@ -10,12 +10,12 @@ use std::time::{Duration, Instant};
 
 use egui::Key;
 use egui_kittest::Harness;
-use komponist_app::engine_sync::EngineSync;
 use komponist_app::{Action, App, EditAction};
 use komponist_audio::{AudioError, HostKind, MidiInputHub, StreamConfig};
 use komponist_i18n::de;
 use komponist_model::edits::TrackProp;
 use komponist_model::{MidiInputSel, TrackId};
+use komponist_session::engine_sync::EngineSync;
 use midir::MidiOutput;
 use midir::os::unix::VirtualOutput;
 
@@ -70,7 +70,7 @@ fn sync_on(config: &StreamConfig, port: &str) -> (EngineSync, Result<(), AudioEr
         config,
         Some(hub),
         receiver,
-        Box::new(App::headless_plugin_host()),
+        Box::new(komponist_session::device_host::PluginHost::headless_fixture()),
     )
 }
 
@@ -278,8 +278,11 @@ fn status_with(h: &mut Harness<'_, App>, needle: &str, secs: u64) -> Option<Stri
 
 /// The changes of the next scan that concern `port`. Other tests of this binary create and drop
 /// virtual ports of their own at the same time, so a scan may report those as well.
-fn changes_of(h: &mut Harness<'_, App>, port: &str) -> Vec<komponist_app::engine_sync::MidiChange> {
-    use komponist_app::engine_sync::MidiChange::{Appeared, Vanished};
+fn changes_of(
+    h: &mut Harness<'_, App>,
+    port: &str,
+) -> Vec<komponist_session::engine_sync::MidiChange> {
+    use komponist_session::engine_sync::MidiChange::{Appeared, Vanished};
     let name = port_name(port);
     let engine = h.state_mut().engine_mut();
     engine.scan_midi();

@@ -11,7 +11,6 @@ use egui::{Key, Modifiers, vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
 use komponist_app::actions::{Action, ProjectAction, UiAction};
-use komponist_app::device_host::PluginCatalogHost;
 use komponist_app::dialogs::file::{FileBrowser, Purpose};
 use komponist_app::dialogs::format::{self, LocalTime};
 use komponist_app::dialogs::{export, missing_plugins, new_project, settings, start};
@@ -23,6 +22,7 @@ use komponist_app::{App, ui_state::PluginView};
 use komponist_i18n::{Lang, de, en};
 use komponist_model::fixtures::demo_project;
 use komponist_plugins::MissingPlugin;
+use komponist_session::device_host::PluginCatalogHost;
 
 fn app_harness(app: App) -> Harness<'static, App> {
     let mut h = komponist_ui::snapshot::builder::<App>(1.0)
@@ -385,9 +385,9 @@ fn a_new_project_and_the_template_are_named_in_english() {
     assert_eq!(new_project::empty_project(Lang::En).name, "Untitled");
     assert_eq!(new_project::empty_project(Lang::De).name, "Unbenannt");
     let p = {
-        let host = App::headless_plugin_host();
+        let host = komponist_session::device_host::PluginHost::headless_fixture();
         let (drums, hexa) = new_project::template_instruments(
-            komponist_app::device_host::PluginCatalogHost::catalog(&host),
+            komponist_session::device_host::PluginCatalogHost::catalog(&host),
         )
         .unwrap();
         new_project::template(Lang::En, drums, hexa)
@@ -473,7 +473,7 @@ fn missing_plugin_files_have_english_places_and_a_search_button() {
     let missing = scratch.path().join("kick.wav");
     device.asset_links.insert(2, AssetLink::new(&missing, None));
     let device_id = device.id;
-    let host = App::headless_plugin_host();
+    let host = komponist_session::device_host::PluginHost::headless_fixture();
     let mut model = missing_plugins::model(Lang::En, &project, &[]);
     model.assets = missing_plugins::missing_assets(Lang::En, &project, None, host.catalog());
     let [row] = model.assets.as_slice() else {

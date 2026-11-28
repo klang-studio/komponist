@@ -24,8 +24,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::*;
-use komponist_app::device_host::{DeviceHost, PluginCatalogHost, PluginHost, ProcessorHost};
-use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::settings::Settings;
 use komponist_app::{Action, App, TransportAction};
 use komponist_audio::{AudioState, HostKind, StreamConfig};
@@ -35,6 +33,8 @@ use komponist_model::{
     Device, DeviceId, DeviceRole, Document, PluginRef, Project, Tick, TickRange,
 };
 use komponist_plugins::PluginManagerEvent;
+use komponist_session::device_host::{DeviceHost, PluginCatalogHost, PluginHost, ProcessorHost};
+use komponist_session::engine_sync::{EngineSync, MidiSetup};
 
 #[cfg(debug_assertions)]
 #[global_allocator]
@@ -273,7 +273,7 @@ fn engine_cpu_16_hexa_tracks_and_8_bridges() {
 }
 
 fn bridges_case(dirs: &komponist_plugins::PluginDirs, workers: u32) {
-    let mut host = App::headless_plugin_host();
+    let mut host = komponist_session::device_host::PluginHost::headless_fixture();
     host.start_scan(dirs);
     let deadline = Instant::now() + PATIENCE;
     'scan: loop {

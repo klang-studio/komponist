@@ -15,13 +15,14 @@ use egui::accesskit::Role;
 use egui::{Key, Modifiers};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable as _;
+use komponist_app::App;
 use komponist_app::settings::{self, Settings};
 use komponist_app::ui_state::Dialog;
-use komponist_app::{App, engine_sync::EngineSync};
 use komponist_engine::export::{ExportJob, NORMALIZE_TARGET_DB};
 use komponist_i18n::de;
 use komponist_model::fixtures::demo_project;
 use komponist_model::{DeviceRole, Document, Project, Tick, TickRange};
+use komponist_session::engine_sync::EngineSync;
 
 const BAR: i64 = 3840;
 const PATIENCE: Duration = Duration::from_secs(120);
@@ -51,7 +52,7 @@ fn one_bar_song(instrument: &komponist_model::PluginRef) -> Project {
 fn app_in(dir: &Path) -> App {
     let mut settings = Settings::default();
     settings.audio.host = komponist_audio::HostKind::Null;
-    let host = App::headless_plugin_host();
+    let host = komponist_session::device_host::PluginHost::headless_fixture();
     let instrument = super::common::shipped_plugin(&host, "org.klang-studio.komponist.hexa")
         .expect("build the Hexa fixture with scripts/build-test-plugins.sh");
     let engine = EngineSync::null(Box::new(host));

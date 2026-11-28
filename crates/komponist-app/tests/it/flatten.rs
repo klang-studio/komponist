@@ -8,10 +8,6 @@ use egui::accesskit::Role;
 use egui::{Event as UiEvent, Modifiers, PointerButton, Pos2, vec2};
 use egui_kittest::kittest::{NodeT, Queryable};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
-use komponist_app::device_host::{
-    AssetHost, DeviceHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost,
-    ParameterHost, PluginCatalogHost, PluginWindowHost, PresetHost, ProcessorHost,
-};
 use komponist_app::project_io::{load_project, save_project};
 use komponist_app::ui_state::{FocusArea, StatusKind};
 use komponist_app::{Action, App, EditAction, ProjectAction};
@@ -30,6 +26,10 @@ use komponist_plugins::{
 };
 use komponist_processor::{
     Event, EventKind, ProcessContext, ProcessStatus, Processor, ProcessorError, StereoIo,
+};
+use komponist_session::device_host::{
+    AssetHost, DeviceHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost,
+    ParameterHost, PluginCatalogHost, PluginWindowHost, PresetHost, ProcessorHost,
 };
 
 use crate::common::{
@@ -410,7 +410,7 @@ impl DevicePresentationHost for Host {}
 
 fn app(project: Project, folder: &Path, effect: DeviceId, fixture: Fixture) -> App {
     app_on(
-        Box::new(App::headless_plugin_host()),
+        Box::new(komponist_session::device_host::PluginHost::headless_fixture()),
         project,
         folder,
         effect,
@@ -469,7 +469,7 @@ fn flatten_isolates_the_complete_chain_and_undo_restores_the_live_state() {
     assert_complete_chain(
         dir.path(),
         plugin("transpose"),
-        Box::new(App::headless_plugin_host()),
+        Box::new(komponist_session::device_host::PluginHost::headless_fixture()),
         0.61,
         false,
     );
@@ -700,7 +700,7 @@ fn flatten_checks_linked_audio_assets_without_an_authored_layout() {
             project.clone(),
             dir.path(),
             Host {
-                backend: Box::new(App::headless_plugin_host()),
+                backend: Box::new(komponist_session::device_host::PluginHost::headless_fixture()),
                 state: effect,
                 fixture: Fixture::Ready,
                 assets: Some(Snapshot {
@@ -759,7 +759,7 @@ fn wav_export_checks_failed_links_without_offline_preparation() {
         project,
         dir.path(),
         Host {
-            backend: Box::new(App::headless_plugin_host()),
+            backend: Box::new(komponist_session::device_host::PluginHost::headless_fixture()),
             state: effect,
             fixture: Fixture::Ready,
             assets: Some(Snapshot {
@@ -1051,7 +1051,7 @@ fn the_localized_track_menu_opens_a_cancellable_flatten_dialog() {
         // The reference screenshots list the in-binary devices in the browser (#294 regenerates
         // them from the packaged catalogue).
         let app = app_on(
-            Box::new(App::headless_plugin_host()),
+            Box::new(komponist_session::device_host::PluginHost::headless_fixture()),
             project.clone(),
             dir.path(),
             effect,

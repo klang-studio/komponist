@@ -5,7 +5,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use komponist_app::actions::{BitDepth, EditAction, ExportRange, PluginAction, ProjectAction};
-use komponist_app::device_host::{DeviceHost, PluginCatalogHost, PluginHost, ProcessorHost};
 use komponist_app::project_io::{load_project, save_project};
 use komponist_app::{Action, App};
 use komponist_engine::compile::{self, NoEnv};
@@ -23,6 +22,7 @@ use komponist_model::{
 use komponist_plugin_api::device_assets::{OfflineRequest, OfflineStatus};
 use komponist_plugins::{DeviceStatus, FailReason, PluginDirs, PluginManagerEvent, ProcessorSetup};
 use komponist_processor::{EventKind, Processor};
+use komponist_session::device_host::{DeviceHost, PluginCatalogHost, PluginHost, ProcessorHost};
 
 use crate::common::{PATIENCE, app_with, config, devices, step_for, step_until};
 use crate::export::{export_settings, read};
@@ -500,7 +500,7 @@ fn current_project_round_trip_and_offline_render() {
     let host = app.engine().host();
     let presets = host.clap_presets(delay);
     assert_eq!(
-        komponist_app::device_host::selected_preset(delay, presets)
+        komponist_session::device_host::selected_preset(delay, presets)
             .map(|(index, edited)| (presets[index].name.as_str(), edited)),
         Some((DELAY_PRESET, false)),
     );
@@ -758,7 +758,7 @@ fn assert_midi_effect_chain(host: &mut PluginHost) {
 
 #[test]
 fn fixture_midi_effects_preserve_instrument_notes() {
-    let mut host = App::headless_plugin_host();
+    let mut host = komponist_session::device_host::PluginHost::headless_fixture();
     if host.catalog().entries().is_empty() {
         eprintln!("skipping: build the verified CLAP fixtures with scripts/build-test-plugins.sh");
         return;
@@ -1120,7 +1120,7 @@ fn missing_bundle_opens_as_a_placeholder_without_changing_the_project() {
     use komponist_app::ui_state::Dialog;
 
     let scratch = tempfile::tempdir().unwrap();
-    let fixture = App::headless_plugin_host();
+    let fixture = komponist_session::device_host::PluginHost::headless_fixture();
     let prepared = fixture
         .manager()
         .prepare_bundled_device(&format!("{DEVICE_PREFIX}hexa"), Some("Init"), &[], &[])

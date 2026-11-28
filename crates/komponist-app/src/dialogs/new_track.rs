@@ -241,7 +241,7 @@ impl State {
     pub(crate) fn choose_default_input(
         &mut self,
         project: &Project,
-        engine: &crate::engine_sync::EngineSync,
+        engine: &komponist_session::engine_sync::EngineSync,
     ) {
         let channels = engine.audio_input_channels();
         self.available_input_channels = channels;
@@ -267,7 +267,7 @@ impl State {
         };
     }
 
-    fn revalidate_jack_input(&mut self, engine: &crate::engine_sync::EngineSync) {
+    fn revalidate_jack_input(&mut self, engine: &komponist_session::engine_sync::EngineSync) {
         let sources = engine.jack_capture_sources();
         if let AudioInput::Hardware(input) = self.input
             && (sources.is_some() || self.jack_input.is_some())
@@ -352,7 +352,7 @@ pub struct View<'a> {
     /// The instruments matching a search text, in list order.
     pub instruments: &'a dyn Fn(&str) -> Vec<Row>,
     /// Current capture routes for the Audio Input menu.
-    pub engine: &'a crate::engine_sync::EngineSync,
+    pub engine: &'a komponist_session::engine_sync::EngineSync,
 }
 
 /// The words default names are made of in `t` (`MIDI`, `Drums`, `Bus`, `Gruppe` / `Group`): what

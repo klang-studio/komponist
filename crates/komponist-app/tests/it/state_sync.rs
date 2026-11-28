@@ -7,7 +7,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use komponist_app::device_host::PluginCatalogHost;
 use komponist_app::{Action, App, EditAction, PluginAction};
 use komponist_audiofile::fixtures as testkit;
 use komponist_engine::Command;
@@ -18,6 +17,7 @@ use komponist_model::project::SavedPluginState;
 use komponist_model::{ChannelRef, DeviceId, DeviceRole, Project, TrackId};
 use komponist_plugin_api::device_assets::AssetStatus;
 use komponist_plugins::{DeviceStatus, PluginManagerEvent};
+use komponist_session::device_host::PluginCatalogHost;
 
 fn undo(app: &mut App) {
     assert!(app.doc().undo_label().is_some());

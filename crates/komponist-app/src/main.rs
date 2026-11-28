@@ -30,9 +30,7 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use komponist_app::device_host::{PluginCatalogHost, PluginHost};
 use komponist_app::dialogs::new_project;
-use komponist_app::engine_sync::{EngineSync, MidiSetup};
 use komponist_app::panels::transport::WORDMARK;
 use komponist_app::settings::{self, Settings};
 use komponist_app::{APP_ID, App};
@@ -40,6 +38,8 @@ use komponist_audio::{HostKind, StreamConfig};
 use komponist_i18n::Lang;
 use komponist_model::Document;
 use komponist_plugins::{BRIDGE_FLAG, PluginManagerConfig};
+use komponist_session::device_host::{PluginCatalogHost, PluginHost};
+use komponist_session::engine_sync::{EngineSync, MidiSetup};
 use komponist_ui::RunOptions;
 
 // Debug builds abort on any allocation inside the audio callback (ARCHITECTURE §6.1).

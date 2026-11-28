@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use komponist_app::App;
 use komponist_app::actions::{BitDepth, ExportRange};
-use komponist_app::device_host::{DeviceHost, PluginCatalogHost, PluginHost};
 use komponist_app::showcase::bundled_demo;
 use komponist_model::automation::AutomationTarget;
 use komponist_model::fixtures::demo_song;
@@ -17,6 +16,7 @@ use komponist_model::{
 };
 use komponist_plugin_api::device_assets::AssetStatus;
 use komponist_plugins::{DeviceStatus, requires_bundled};
+use komponist_session::device_host::{DeviceHost, PluginCatalogHost, PluginHost};
 
 use crate::common::step_until;
 use crate::export::{export, export_settings, peak_db, read, scratch};
@@ -154,7 +154,7 @@ fn check_factory_presets(project: &Project, host: &dyn DeviceHost, factory: &Plu
         for &(index, expected) in presets {
             let device = &track_named(project, track).channel.devices[index];
             let catalog = host.clap_presets(device);
-            let (selected, _) = komponist_app::device_host::selected_preset(device, catalog)
+            let (selected, _) = komponist_session::device_host::selected_preset(device, catalog)
                 .unwrap_or_else(|| panic!("{track}: no preset for {}", device.plugin.id));
             assert!(catalog[selected].factory && catalog[selected].name == expected);
             let factory_state = factory
@@ -458,7 +458,7 @@ fn check_sampler_assets(app: &mut App, project: &Project) {
 
 #[test]
 fn headless_loads_a_shipped_device_from_the_verified_fixture_inventory() {
-    let host = App::headless_plugin_host();
+    let host = komponist_session::device_host::PluginHost::headless_fixture();
     let Some(hexa) = host.catalog().entries().iter().find(|entry| {
         entry.plugin.id == "org.klang-studio.komponist.hexa" && requires_bundled(&entry.plugin)
     }) else {
@@ -496,7 +496,7 @@ fn render_levels() {
         if let Some(launcher) = &launcher {
             super::bundled_current::scan(launcher, &out)
         } else {
-            App::headless_plugin_host()
+            komponist_session::device_host::PluginHost::headless_fixture()
         }
     };
     let db = |x: f32| 20.0 * x.max(1e-9).log10();

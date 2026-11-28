@@ -3656,13 +3656,13 @@ mod tests {
     /// parameters at `set` (by author key, plain values) over the defaults, and the live data
     /// `dynamics`.
     fn presse_card(set: &[(&str, f64)], dynamics: Option<crate::gain_trace::Dynamics>) -> Card {
-        use crate::device_host::{
+        use komponist_session::device_host::{
             DevicePresentationHost as _, ParameterHost as _, PluginCatalogHost as _,
             ProcessorHost as _,
         };
         use std::time::{Duration, Instant};
 
-        let mut host = crate::app::App::headless_plugin_host();
+        let mut host = komponist_session::device_host::PluginHost::headless_fixture();
         let plugin = host
             .catalog()
             .entries()
@@ -3692,17 +3692,18 @@ mod tests {
                 max_block: 256,
             },
         );
-        let wait =
-            |host: &mut crate::device_host::PluginHost,
-             what: &str,
-             mut done: Box<dyn FnMut(&crate::device_host::PluginHost) -> bool>| {
-                let deadline = Instant::now() + Duration::from_secs(30);
-                while !done(host) {
-                    host.poll();
-                    assert!(Instant::now() < deadline, "no {what}");
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-            };
+        let wait = |host: &mut komponist_session::device_host::PluginHost,
+                    what: &str,
+                    mut done: Box<
+            dyn FnMut(&komponist_session::device_host::PluginHost) -> bool,
+        >| {
+            let deadline = Instant::now() + Duration::from_secs(30);
+            while !done(host) {
+                host.poll();
+                assert!(Instant::now() < deadline, "no {what}");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
         wait(
             &mut host,
             "native layout of the Presse",

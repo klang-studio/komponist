@@ -4,11 +4,6 @@ use std::sync::mpsc::{self, Sender};
 use egui::Key;
 use egui_kittest::Harness;
 use komponist_app::actions::{SelectMode, SelectionChange};
-use komponist_app::device_host::{
-    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
-    PluginCatalogHost, PluginWindowHost, PresetHost, ProcessorHost,
-};
-use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::{Action, App, EditAction, ProjectAction, TransportAction, UiAction};
 use komponist_engine::testing::{EventLog, Logged, TestSine};
@@ -16,6 +11,11 @@ use komponist_model::edits::{self, ExclusiveFlag, NewTrack};
 use komponist_model::{Device, DeviceId, DeviceRole, Document, PluginRef, Project, TrackId};
 use komponist_plugins::{Catalog, DeviceStatus, PluginManagerEvent, ProcessorSetup};
 use komponist_processor::{EventKind, Processor};
+use komponist_session::device_host::{
+    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
+    PluginCatalogHost, PluginWindowHost, PresetHost, ProcessorHost,
+};
+use komponist_session::engine_sync::EngineSync;
 
 struct SineHost {
     catalog: Catalog,

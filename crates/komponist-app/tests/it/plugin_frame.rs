@@ -15,11 +15,6 @@ use egui::{Rect, pos2, vec2};
 use egui_kittest::kittest::{NodeT as _, Queryable as _};
 use egui_kittest::{Harness, SnapshotOptions, SnapshotResults};
 use komponist_app::actions::{EditAction, PluginAction, ProjectAction};
-use komponist_app::device_host::{
-    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
-    PluginCatalogHost, PluginWindowHost, PresetHost, ProcessorHost,
-};
-use komponist_app::engine_sync::EngineSync;
 use komponist_app::settings::Settings;
 use komponist_app::ui_state::PluginView;
 use komponist_app::views::devices::model::{Param, all_plugin_params};
@@ -40,6 +35,11 @@ use komponist_plugins::{
     Catalog, DeviceStatus, FailReason, PluginError, PluginManagerEvent, ProcessorSetup,
 };
 use komponist_processor::Processor;
+use komponist_session::device_host::{
+    AssetHost, DevicePresentationHost, DeviceStateHost, OfflineRenderHost, ParameterHost,
+    PluginCatalogHost, PluginWindowHost, PresetHost, ProcessorHost,
+};
+use komponist_session::engine_sync::EngineSync;
 
 /// The title the device card gives a crashed device (`views::devices::model::failure_texts`, #2).
 const CRASHED_TITLE: &str = "Abgestürzt";
@@ -71,7 +71,7 @@ fn surge_header() -> HeaderModel {
 }
 
 fn hexa_header() -> HeaderModel {
-    let host = App::headless_plugin_host();
+    let host = komponist_session::device_host::PluginHost::headless_fixture();
     let hexa = crate::common::shipped(&host, "hexa");
     let entry = host.catalog().resolve(&hexa).unwrap();
     HeaderModel {
@@ -88,7 +88,7 @@ fn hexa_header() -> HeaderModel {
 
 /// A compact grid using the main controls advertised by the Hexa fixture.
 fn macro_params() -> Vec<Param> {
-    let host = App::headless_plugin_host();
+    let host = komponist_session::device_host::PluginHost::headless_fixture();
     let plugin = crate::common::shipped(&host, "hexa");
     let (project, _, device) = crate::common::instrument_project("Hexa", plugin);
     let mut app = crate::common::app_with(project, host);
@@ -617,7 +617,7 @@ fn scripted_app(layout: Option<&[u8]>) -> (App, Rc<RefCell<Script>>, DeviceId) {
         .flat_map(|t| t.channel.devices.iter())
         .find(|d| d.plugin.name == "Surge XT")
         .unwrap();
-    let host = App::headless_plugin_host();
+    let host = komponist_session::device_host::PluginHost::headless_fixture();
     let catalog = crate::common::fixture_catalog(
         host.catalog(),
         &[PluginDescriptor {

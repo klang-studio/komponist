@@ -12,12 +12,12 @@ use acceptance_support::*;
 use common::{app_with, config, fixture_dirs, scratch, step_until};
 use egui::accesskit::Role;
 use egui_kittest::kittest::Queryable as _;
-use komponist_app::device_host::PluginHost;
 use komponist_app::ui_state::DockTab;
 use komponist_app::{Action, UiAction};
 use komponist_model::DeviceRole;
 use komponist_model::fixtures::empty_project;
 use komponist_plugins::DeviceStatus;
+use komponist_session::device_host::PluginHost;
 
 #[test]
 fn a_plugin_loads_by_double_click_and_by_drag_and_offers_its_gui() {
