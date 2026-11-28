@@ -21,6 +21,7 @@ use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
 use rubato::{Fft, FixedSync, Indexing, Resampler};
 
 use crate::AudioError;
+use crate::decode::{MAX_SAMPLE_RATE, MIN_SAMPLE_RATE};
 
 /// Input frames per converter call.
 const CHUNK: usize = 1024;
@@ -61,9 +62,11 @@ pub struct StreamResampler {
 }
 
 impl StreamResampler {
-    /// A converter from `from` Hz to `to` Hz for `channels` channels.
+    /// A converter from `from` Hz to `to` Hz for `channels` channels. Both rates must be ones the
+    /// decoders accept ([`MIN_SAMPLE_RATE`] ..= [`MAX_SAMPLE_RATE`]).
     pub fn new(from: u32, to: u32, channels: usize) -> Result<StreamResampler, AudioError> {
-        if from == 0 || to == 0 || channels == 0 {
+        let rates = MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE;
+        if !rates.contains(&from) || !rates.contains(&to) || channels == 0 {
             return Err(AudioError::Resample(format!(
                 "{from} Hz to {to} Hz with {channels} channels"
             )));

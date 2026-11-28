@@ -28,6 +28,11 @@ use crate::{AudioError, MAX_CHANNELS};
 /// Highest sample rate accepted; a header claiming more is damaged or hostile.
 pub const MAX_SAMPLE_RATE: u32 = 768_000;
 
+/// Lowest sample rate accepted (#230): below it, a header is damaged or hostile, and converting
+/// to the engine rate would multiply every frame by hundreds or more (4 Hz to 192 kHz gave 48 000
+/// output frames per input frame).
+pub const MIN_SAMPLE_RATE: u32 = 1_000;
+
 /// Most frames [`decode_all`] holds in memory (2^27: 46 minutes at 48 kHz, 1 GiB in stereo).
 pub const MAX_DECODE_FRAMES: u64 = 1 << 27;
 
@@ -268,7 +273,7 @@ impl Wav {
         if spec.sample_rate == 0 || spec.channels == 0 {
             return Err(AudioError::Malformed("no sample rate or channels".into()));
         }
-        if spec.sample_rate > MAX_SAMPLE_RATE {
+        if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&spec.sample_rate) {
             return Err(AudioError::Unsupported(format!("{} Hz", spec.sample_rate)));
         }
         let declared_frames = u64::from(reader.duration());
@@ -462,7 +467,7 @@ impl Sym {
         if sample_rate == 0 || source_channels == 0 {
             return Err(AudioError::Malformed("no sample rate or channels".into()));
         }
-        if sample_rate > MAX_SAMPLE_RATE {
+        if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&sample_rate) {
             return Err(AudioError::Unsupported(format!("{sample_rate} Hz")));
         }
         let mut sym = Sym {

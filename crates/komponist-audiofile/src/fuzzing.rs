@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::decode::MAX_SAMPLE_RATE;
+use crate::decode::{MAX_SAMPLE_RATE, MIN_SAMPLE_RATE};
 use crate::peaks::cache;
 use crate::{AudioFile, FileId, MAX_CHANNELS, PeakData, StreamResampler, decode_all};
 
@@ -21,7 +21,7 @@ pub fn audio_file(path: &Path, seek: u64) {
     if let Ok(mut file) = AudioFile::open(path) {
         let info = *file.info();
         assert!(
-            (1..=MAX_SAMPLE_RATE).contains(&info.sample_rate),
+            (MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&info.sample_rate),
             "{info:?}"
         );
         assert!((1..=MAX_CHANNELS).contains(&info.channels), "{info:?}");
@@ -33,7 +33,7 @@ pub fn audio_file(path: &Path, seek: u64) {
             match file.read(&mut chunk) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
-                    assert!(n * info.channels < chunk.len(), "{n} frames do not fit");
+                    assert!(n * info.channels <= chunk.len(), "{n} frames do not fit");
                     assert_finite(&chunk[..n * info.channels]);
                     read += n;
                 }
@@ -48,7 +48,7 @@ pub fn audio_file(path: &Path, seek: u64) {
         }
     }
     if let Ok(decoded) = decode_all(path, Some(MAX_SECONDS)) {
-        assert!((1..=MAX_SAMPLE_RATE).contains(&decoded.sample_rate));
+        assert!((MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&decoded.sample_rate));
         assert!((1..=MAX_CHANNELS).contains(&decoded.channels.len()));
         let frames = decoded.frames();
         assert!(frames > 0);
@@ -95,7 +95,7 @@ pub fn peak_cache(bytes: &[u8]) {
     let Some(data) = cache::from_bytes(bytes, &id) else {
         return;
     };
-    assert!((1..=MAX_SAMPLE_RATE).contains(&data.sample_rate()));
+    assert!((MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&data.sample_rate()));
     assert!((1..=MAX_CHANNELS).contains(&data.channels()));
     assert!(data.frames() > 0);
     if bytes.starts_with(b"KPK3") {
@@ -138,7 +138,7 @@ pub fn resampler(bytes: &[u8]) {
     let channels = usize::from(input.next() % 4);
     let Ok(mut converter) = StreamResampler::new(from, to, channels) else {
         assert!(
-            from == 0 || channels == 0,
+            from < MIN_SAMPLE_RATE || channels == 0,
             "{from} Hz to {to} Hz, {channels} channels"
         );
         return;
@@ -154,7 +154,8 @@ pub fn resampler(bytes: &[u8]) {
             pushed = 0;
             continue;
         }
-        let frames = usize::from(op) * 37;
+        // Small chunks: at 1 kHz to 192 kHz, every input frame gives 192 output frames.
+        let frames = usize::from(op) * 4;
         // The last channel one frame longer than the others.
         let uneven = channels > 1 && input.next() % 8 == 0;
         let chunk: Vec<Vec<f32>> = (0..channels)

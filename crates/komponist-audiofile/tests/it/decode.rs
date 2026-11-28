@@ -351,7 +351,7 @@ fn errors_name_what_is_wrong() {
     write_wav_i16(&empty, 44100, 1, &[]);
     assert_eq!(AudioFile::open(&empty).unwrap_err(), AudioError::Empty);
     let long = dir.path("long.wav");
-    write_wav_i16(&long, 100, 1, &vec![0i16; 1000]); // 10 s
+    write_wav_i16(&long, 1000, 1, &vec![0i16; 10_000]); // 10 s
     assert_eq!(
         decode_all(&long, Some(5.0)).unwrap_err(),
         AudioError::TooLong
@@ -394,6 +394,19 @@ fn absurd_sample_rates_are_refused() {
     let ok = dir.path("ok.wav");
     write_wav_i16(&ok, 768_000, 1, &[1, 2, 3]);
     assert!(AudioFile::open(&ok).is_ok());
+    // #230 (found by the `resampler` fuzz target): a 4 Hz file would have been converted to the
+    // engine rate at 48 000 output frames per input frame.
+    for (name, rate) in [("slow.wav", 4), ("below.wav", 999)] {
+        let slow = dir.path(name);
+        write_wav_i16(&slow, rate, 1, &[1, 2, 3]);
+        assert!(matches!(
+            AudioFile::open(&slow),
+            Err(AudioError::Unsupported(_))
+        ));
+    }
+    let lowest = dir.path("lowest.wav");
+    write_wav_i16(&lowest, 1000, 1, &[1, 2, 3]);
+    assert!(AudioFile::open(&lowest).is_ok());
 }
 
 #[test]

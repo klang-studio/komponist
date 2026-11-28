@@ -70,7 +70,7 @@ pub fn from_bytes(bytes: &[u8], id: &FileId) -> Option<PeakData> {
     let level_count = r.u32()? as usize;
     // The decoders refuse other rates, and the level count follows from the frame count: a level
     // per factor of `FACTOR` down to a single bucket, as `PeakBuilder::finish` builds them.
-    if !(1..=crate::decode::MAX_SAMPLE_RATE).contains(&sample_rate)
+    if !(crate::decode::MIN_SAMPLE_RATE..=crate::decode::MAX_SAMPLE_RATE).contains(&sample_rate)
         || channels == 0
         || channels > crate::MAX_CHANNELS
         || level_count == 0

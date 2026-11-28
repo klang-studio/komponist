@@ -98,6 +98,26 @@ fn short_input_still_gets_the_right_length() {
     }
 }
 
+/// #230: rates outside what the decoders accept are refused, so no ratio can explode.
+#[test]
+fn rates_outside_the_decodable_range_are_errors() {
+    for (from, to) in [
+        (4, 192_000),
+        (999, 48_000),
+        (48_000, 999),
+        (768_001, 48_000),
+    ] {
+        assert!(
+            matches!(
+                StreamResampler::new(from, to, 1),
+                Err(AudioError::Resample(_))
+            ),
+            "{from} Hz to {to} Hz"
+        );
+    }
+    assert!(StreamResampler::new(1000, 192_000, 1).is_ok());
+}
+
 #[test]
 fn zero_rates_are_errors() {
     assert!(matches!(
