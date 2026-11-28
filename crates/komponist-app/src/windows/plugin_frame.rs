@@ -497,7 +497,8 @@ impl App {
 
     /// Brings the bridge-owned plugin windows forward in their current stacking order.
     pub fn raise_bridge_frames(&mut self) {
-        self.frames.raise_bridge_frames(self.engine.host_mut());
+        self.frames
+            .raise_bridge_frames(self.session.engine_mut().host_mut());
     }
 
     /// `OpenWindow` for a window that is open already: it comes to the front.
@@ -532,7 +533,7 @@ impl App {
                 d.plugin.name == name
                     || crate::views::catalog_plugin_name(
                         self.lang,
-                        self.engine.host().catalog(),
+                        self.session.engine().host().catalog(),
                         &d.plugin,
                     ) == name
             })
@@ -604,7 +605,7 @@ impl App {
         let Some(frame) = self.frames.remove(device) else {
             // No frame drawn yet (headless): close what may be open.
             if window.view == PluginView::Gui {
-                self.engine.host_mut().close_gui(device);
+                self.session.engine_mut().host_mut().close_gui(device);
             }
             return;
         };
@@ -617,7 +618,8 @@ impl App {
         if let Some(pos) = self.frames.retirement_position(&frame) {
             self.remember_frame(device, |m| m.pos = Some(pos));
         }
-        self.frames.retire(self.engine.host_mut(), frame);
+        self.frames
+            .retire(self.session.engine_mut().host_mut(), frame);
     }
 
     /// Another project opens (`App::open_document`, before `EngineSync::reset` releases the
@@ -705,7 +707,7 @@ impl App {
         // After the raise on activation, so the picked frame ends up in front.
         self.frames.apply_focus(
             &self.ui.plugin_windows,
-            self.engine.host_mut(),
+            self.session.engine_mut().host_mut(),
             ctx,
             native,
             now,
@@ -808,7 +810,7 @@ impl App {
                     let Some((_, _, target)) = self.project().find_device(device) else {
                         return;
                     };
-                    let entries = self.engine.host().clap_presets(target);
+                    let entries = self.session.engine().host().clap_presets(target);
                     let n = entries.len();
                     if n == 0 {
                         return;
@@ -890,7 +892,12 @@ impl App {
         let Some((_, _, target)) = self.project().find_device(device) else {
             return;
         };
-        if let Some(entry) = self.engine.host().clap_presets(target).get(preset)
+        if let Some(entry) = self
+            .session
+            .engine()
+            .host()
+            .clap_presets(target)
+            .get(preset)
             && let Some(frame) = self.frames.frame_mut(device)
         {
             frame.queued_preset = Some(entry.source.clone());
@@ -911,7 +918,8 @@ impl App {
                 continue;
             };
             if !self
-                .engine
+                .session
+                .engine()
                 .host()
                 .clap_presets(target)
                 .iter()
@@ -1091,7 +1099,7 @@ impl App {
                 if remote {
                     // The bridge's frame is up: to the front (macOS cooperative activation, the
                     // Windows foreground lock).
-                    activation::bring_to_front(self.engine.host_mut(), device);
+                    activation::bring_to_front(self.session.engine_mut().host_mut(), device);
                     return;
                 }
                 let chrome = chrome(f);
@@ -1121,7 +1129,7 @@ impl App {
                 if let Some(rect) = rect {
                     // The bridge's frame closed (×, Esc, "Parameter", the plugin itself): it
                     // yielded back, so the app takes the focus if the bridge had it.
-                    activation::take_back(self.engine.host().bridge_pid(device));
+                    activation::take_back(self.session.engine().host().bridge_pid(device));
                     self.remember_frame(device, |m| m.pos = Some(rect_pos(rect)));
                     if let Some(f) = self.frames.frame_mut(device) {
                         f.remote_rect = Some(rect);
@@ -1232,7 +1240,7 @@ impl App {
         else {
             return false;
         };
-        let host = self.engine.host();
+        let host = self.session.engine().host();
         let running = host.status(device) == DeviceStatus::Ok;
         let has_gui = host.has_gui(device);
         let frame = &mut self.frames.frames[i];
@@ -1256,7 +1264,7 @@ impl App {
         if view != PluginView::Gui && frame.gui != Gui::Idle {
             // "Parameter": the app's frame takes over at the bridge frame's place.
             frame.gui = Gui::Idle;
-            self.engine.host_mut().close_gui(device);
+            self.session.engine_mut().host_mut().close_gui(device);
         }
         let frame = &self.frames.frames[i];
         if running && view == PluginView::Gui && frame.gui == Gui::Idle {
@@ -1284,7 +1292,12 @@ impl App {
                 lang: self.lang.code().to_owned(),
                 rect,
             };
-            match self.engine.host_mut().open_gui(device, target) {
+            match self
+                .session
+                .engine_mut()
+                .host_mut()
+                .open_gui(device, target)
+            {
                 Ok(()) => {
                     let frame = &mut self.frames.frames[i];
                     frame.gui = Gui::Opening;
@@ -1326,7 +1339,7 @@ impl App {
         else {
             return false;
         };
-        let host = self.engine.host();
+        let host = self.session.engine().host();
         let status = host.status(device);
         let has_gui = host.has_gui(device);
         let running = status == DeviceStatus::Ok;
@@ -1393,7 +1406,8 @@ impl App {
                     frame.gui = Gui::Opening;
                     keys::log(format!("frame {}: child {child:#x}", device.0));
                     let scale = f64::from(seen.ppp);
-                    self.engine
+                    self.session
+                        .engine_mut()
                         .host_mut()
                         .open_gui(
                             device,
@@ -1523,7 +1537,11 @@ impl App {
                         w.height = size.h;
                     }
                 }
-                Effect::Tell(size) => self.engine.host_mut().set_gui_size(device, size),
+                Effect::Tell(size) => self
+                    .session
+                    .engine_mut()
+                    .host_mut()
+                    .set_gui_size(device, size),
             }
         }
     }
@@ -1551,7 +1569,7 @@ impl App {
             f.preset.as_ref(),
             f.preset_changed,
         );
-        let status = self.engine.host().status(device);
+        let status = self.session.engine().host().status(device);
         let name = self.plugin_name(device);
         let body = match status {
             DeviceStatus::Loading => Some(BodyModel::Loading),
@@ -1559,12 +1577,14 @@ impl App {
             DeviceStatus::Missing => Some(BodyModel::Missing { name }),
             DeviceStatus::Ok => match window.view {
                 PluginView::Gui => Some(BodyModel::Gui { native, name }),
-                PluginView::Params if self.engine.host().native_layout(device).is_some() => {
+                PluginView::Params
+                    if self.session.engine().host().native_layout(device).is_some() =>
+                {
                     self.project().find_device(device).map(|(_, _, device)| {
                         let mut card = crate::views::devices::model::card(
                             self.lang,
                             device,
-                            self.engine.host(),
+                            self.session.engine().host(),
                             &self.ui.plugin_windows,
                         );
                         card.macros = self.param_grid(i).macros;
@@ -1623,7 +1643,8 @@ impl App {
         }
         if let Some(header) = to_bridge {
             let lang = self.lang.code();
-            self.engine
+            self.session
+                .engine_mut()
                 .host_mut()
                 .set_frame_header(device, header, lang);
         }
@@ -1636,7 +1657,7 @@ impl App {
         let Some((_, _, d)) = self.project().find_device(device) else {
             return;
         };
-        let entries = self.engine.host().clap_presets(d);
+        let entries = self.session.engine().host().clap_presets(d);
         let selected = komponist_session::device_host::selected_preset(d, entries);
         let preset = selected.map(|(index, _)| entries[index].source.clone());
         let changed = selected.is_some_and(|(_, modified)| modified);
@@ -1661,7 +1682,7 @@ impl App {
     ) -> HeaderModel {
         let project = self.project();
         let found = project.find_device(device);
-        let host = self.engine.host();
+        let host = self.session.engine().host();
         let status = host.status(device);
         let (name, sub, bypassed) = match found {
             Some((channel, _, d)) => {
@@ -1672,7 +1693,7 @@ impl App {
                 (
                     crate::views::catalog_plugin_name(
                         self.lang,
-                        self.engine.host().catalog(),
+                        self.session.engine().host().catalog(),
                         &d.plugin,
                     ),
                     format!(
@@ -1733,7 +1754,7 @@ impl App {
     /// parameters read from a legacy device's saved state.
     fn param_grid(&self, i: usize) -> ParamGrid {
         let device = self.frames.frames[i].device;
-        let host = self.engine.host();
+        let host = self.session.engine().host();
         let owner = self.project().find_device(device);
         let params = if let Some(infos) = host.params(device) {
             all_plugin_params(self.lang, infos, |id| host.param_value(device, id))
@@ -1745,7 +1766,7 @@ impl App {
             && let Some(track) = self.project().track(id)
         {
             let view = &self.ui().track_macros;
-            let effective = self.engine.telemetry().macro_values(id);
+            let effective = self.session.engine().telemetry().macro_values(id);
             for param in grid.params.iter().filter(|param| param.info.automatable) {
                 let target = komponist_model::automation::AutomationTarget::Param {
                     device,
@@ -1771,7 +1792,7 @@ impl App {
             .map_or_else(String::new, |(_, _, d)| {
                 crate::views::catalog_plugin_name(
                     self.lang,
-                    self.engine.host().catalog(),
+                    self.session.engine().host().catalog(),
                     &d.plugin,
                 )
             })

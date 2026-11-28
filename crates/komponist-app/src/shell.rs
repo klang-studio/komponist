@@ -57,12 +57,12 @@ impl App {
         let menu = self.menu_snapshot();
         let model = transport::TransportModel {
             provisional_recordings: provisional_recordings.as_deref(),
-            project: self.doc.project(),
-            dirty: self.doc.is_dirty(),
-            state: self.engine.transport(),
-            playhead: self.engine.playhead(),
-            cpu: self.engine.stats().cpu_load(),
-            audio: self.engine.audio_state(),
+            project: self.session.document().project(),
+            dirty: self.session.document().is_dirty(),
+            state: self.session.engine().transport(),
+            playhead: self.session.engine().playhead(),
+            cpu: self.session.engine().stats().cpu_load(),
+            audio: self.session.engine().audio_state(),
             keymap: &self.keymap,
             lang: self.lang,
             master_display: self.settings.master_display,
@@ -143,9 +143,9 @@ impl App {
             .provisional_recordings_folder()
             .map(std::path::Path::to_path_buf);
         let mut ctx = ViewCtx::new(
-            self.doc.project(),
+            self.session.document().project(),
             &mut self.ui,
-            &self.engine,
+            self.session.engine(),
             &mut self.meters,
             &self.keymap,
             &mut self.queue,
@@ -161,7 +161,7 @@ impl App {
         ctx.audio_recording = self.recording.audio();
         ctx.provisional_recordings = provisional_recordings.as_deref();
         ctx.exports = self.export.done();
-        let midi = self.engine.telemetry().held_input_keys();
+        let midi = self.session.engine().telemetry().held_input_keys();
         ctx.held_notes = self
             .shell
             .held_notes
@@ -328,7 +328,7 @@ impl App {
 
     pub(crate) fn live_editor_area(&self) -> Option<FocusArea> {
         crate::views::audio_editor::live::recording_area(
-            self.doc.project(),
+            self.session.document().project(),
             &self.ui,
             self.recording.midi(),
             self.recording.audio(),
@@ -336,7 +336,7 @@ impl App {
     }
 
     fn dock_body(&self) -> DockBody {
-        let p = self.doc.project();
+        let p = self.session.document().project();
         match self.ui.layout.dock_tab {
             // While recording, the editor shows the take (S02 "Piano Roll · live").
             DockTab::Editor if self.live_editor_area().is_some() => {
@@ -379,7 +379,7 @@ impl App {
         dock::tab_strip(
             &mut strip_ui,
             strip,
-            self.doc.project(),
+            self.session.document().project(),
             &self.ui,
             self.live_editor_area(),
             &self.keymap,

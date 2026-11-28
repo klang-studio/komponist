@@ -473,7 +473,7 @@ impl crate::App {
                     self.lang,
                     self.project(),
                     self.project_dir().as_deref(),
-                    self.engine.host().catalog(),
+                    self.session.engine().host().catalog(),
                 );
                 if missing.is_empty() && audio.is_empty() && assets.is_empty() {
                     self.queue.push(Action::Project(
@@ -540,7 +540,7 @@ impl crate::App {
                 }
             }
             Some(Overlay::NewTrack(state)) => {
-                let catalog = self.engine.host().catalog();
+                let catalog = self.session.engine().host().catalog();
                 let instrument = state
                     .instrument
                     .as_ref()
@@ -551,7 +551,7 @@ impl crate::App {
                     state.instrument = instrument.cloned();
                 }
                 let favorites = &self.ui.browser.favorites;
-                let project = self.doc.project();
+                let project = self.session.document().project();
                 let instruments = |query: &str| {
                     let no_exports: [String; 0] = [];
                     crate::views::browser::model::instrument_rows(
@@ -570,7 +570,7 @@ impl crate::App {
                 let view = new_track::View {
                     project,
                     instruments: &instruments,
-                    engine: &self.engine,
+                    engine: self.session.engine(),
                 };
                 match new_track::show(ctx, state, &view) {
                     Some(new_track::Output::Create(spec)) => {

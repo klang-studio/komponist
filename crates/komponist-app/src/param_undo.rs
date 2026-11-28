@@ -407,7 +407,7 @@ impl App {
         self.end_gesture();
         self.checkpoint_pending_param_edits(device);
         let label = self.param_label(device, id);
-        self.doc.begin_gesture(label);
+        self.session.document_mut().begin_gesture(label);
         self.param_undo.gesture_device = Some(device);
     }
 
@@ -439,10 +439,10 @@ impl App {
     /// Associates a macro's bridged targets with the open gesture, so their verified snapshots
     /// can amend the gesture rather than making separate undo steps.
     pub fn note_macro_gesture(&mut self, track: TrackId, index: u8) {
-        if !self.doc.in_gesture() {
+        if !self.session.document().in_gesture() {
             return;
         }
-        let Some(track) = self.doc.project().track(track) else {
+        let Some(track) = self.session.document().project().track(track) else {
             return;
         };
         let Some(mac) = track.macros.0.get(usize::from(index)) else {
@@ -453,7 +453,7 @@ impl App {
             .extend(mac.mappings.iter().take(MAX_MAPPINGS).filter_map(
                 |mapping| match mapping.target {
                     AutomationTarget::Param { device, .. }
-                        if self.engine.host().params(device).is_some() =>
+                        if self.session.engine().host().params(device).is_some() =>
                     {
                         Some(device)
                     }
@@ -467,20 +467,20 @@ impl App {
     /// pointer is released.
     pub(crate) fn end_gesture(&mut self) {
         self.release_automation_controls();
-        let top = self.doc.top_step();
-        self.doc.end_gesture();
+        let top = self.session.document().top_step();
+        self.session.document_mut().end_gesture();
         self.param_undo.gesture_device = None;
-        let pushed = self.doc.top_step() != top;
+        let pushed = self.session.document().top_step() != top;
         let now = Instant::now();
         for device in std::mem::take(&mut self.param_undo.macro_gesture) {
-            if let Some(step) = self.doc.top_step().filter(|_| pushed) {
+            if let Some(step) = self.session.document().top_step().filter(|_| pushed) {
                 self.param_undo.macro_steps.insert(device, (step, now));
-                self.engine.host_mut().request_state(device);
+                self.session.engine_mut().host_mut().request_state(device);
             }
         }
         for device in std::mem::take(&mut self.param_undo.gesture_bridged) {
-            self.engine.host_mut().request_state(device);
-            match self.doc.top_step() {
+            self.session.engine_mut().host_mut().request_state(device);
+            match self.session.document().top_step() {
                 // The snapshot that came during the drag made the step; the last one amends it.
                 Some(step) if pushed => {
                     // The plugin's own debounce (1 s after the last turn) may still fire after
@@ -509,10 +509,10 @@ impl App {
     /// document's state.
     pub(crate) fn cancel_gesture(&mut self) {
         self.release_automation_controls();
-        let before = Arc::clone(self.doc.project());
+        let before = Arc::clone(self.session.document().project());
         self.ui.track_macros.range_drag_epoch =
             self.ui.track_macros.range_drag_epoch.wrapping_add(1);
-        self.doc.cancel_gesture();
+        self.session.document_mut().cancel_gesture();
         self.param_undo.gesture_device = None;
         self.param_undo.macro_gesture.clear();
         self.follow_device_states(&before);
@@ -525,11 +525,15 @@ impl App {
                 .and_then(|(_, _, d)| d.saved_state())
                 .or_else(|| self.param_undo.baseline.get(&device).cloned());
             if let Some(state) = state
-                && self.engine.host_mut().restore_saved_state(device, &state)
+                && self
+                    .session
+                    .engine_mut()
+                    .host_mut()
+                    .restore_saved_state(device, &state)
             {
                 self.param_undo.echo.insert(device, now + ECHO_QUIET);
                 if !state.parameter_bases.is_empty() {
-                    self.engine.host_mut().request_state(device);
+                    self.session.engine_mut().host_mut().request_state(device);
                 }
             }
         }
@@ -542,7 +546,7 @@ impl App {
 
     /// Stores complete live-device transactions once the unrelated gesture closes.
     pub(crate) fn flush_deferred(&mut self) {
-        if self.doc.in_gesture() {
+        if self.session.document().in_gesture() {
             return;
         }
         let mut waiting = BTreeSet::new();
@@ -575,7 +579,8 @@ impl App {
         self.param_undo.next_text_edit = self.param_undo.next_text_edit.wrapping_add(1);
         let request = self.param_undo.next_text_edit;
         if self
-            .engine
+            .session
+            .engine_mut()
             .host_mut()
             .request_param_text(device, request, id, text)
         {
@@ -614,13 +619,23 @@ impl App {
         };
         self.param_undo.cancel_text_edit(device, id);
         if let Some(value) = value.or(edit.fallback)
-            && self.doc.project().find_device(device).is_some()
-            && self.engine.host().status(device) == komponist_plugins::DeviceStatus::Ok
-            && self.engine.host().params(device).is_some_and(|params| {
-                params
-                    .iter()
-                    .any(|param| param.id == id && (param.min..=param.max).contains(&value))
-            })
+            && self
+                .session
+                .document()
+                .project()
+                .find_device(device)
+                .is_some()
+            && self.session.engine().host().status(device) == komponist_plugins::DeviceStatus::Ok
+            && self
+                .session
+                .engine()
+                .host()
+                .params(device)
+                .is_some_and(|params| {
+                    params
+                        .iter()
+                        .any(|param| param.id == id && (param.min..=param.max).contains(&value))
+                })
         {
             self.dispatch(crate::actions::Action::Plugin(
                 crate::actions::PluginAction::SetParam { device, id, value },
@@ -657,7 +672,11 @@ impl App {
     pub(crate) fn set_param(&mut self, device: DeviceId, id: u32, value: f64) {
         // Most devices take edits through the engine slot. The control socket orders bridge
         // edits alongside editor transactions and pending state restores.
-        let slot = self.engine.program().and_then(|p| p.slots.slot(device));
+        let slot = self
+            .session
+            .engine()
+            .program()
+            .and_then(|p| p.slots.slot(device));
         if let (Some(slot), Some((owner, target))) =
             (slot, self.device_automation_target(device, id))
             && self.manual_automation(owner, &target, Command::SetParam { slot, id, value })
@@ -667,11 +686,12 @@ impl App {
         let loaded_base = self.base_at_pending_preset(device, id);
         let bridged = if let Some(slot) = slot
             && let Some(serial) = self
-                .engine
+                .session
+                .engine_mut()
                 .host_mut()
                 .edit_param_through_render(device, id, value)
         {
-            self.engine.send(Command::SetParamEdit {
+            self.session.engine_mut().send(Command::SetParamEdit {
                 slot,
                 id,
                 value,
@@ -679,7 +699,10 @@ impl App {
             });
             true
         } else {
-            self.engine.host_mut().set_param(device, id, value)
+            self.session
+                .engine_mut()
+                .host_mut()
+                .set_param(device, id, value)
         };
         if bridged {
             self.remember_param_edit(device, id);
@@ -688,13 +711,17 @@ impl App {
             self.param_undo
                 .turned
                 .insert(device, (label, Instant::now()));
-            if self.doc.in_gesture() && self.param_undo.gesture_device == Some(device) {
+            if self.session.document().in_gesture()
+                && self.param_undo.gesture_device == Some(device)
+            {
                 self.param_undo.gesture_bridged.insert(device);
             }
             return;
         }
         if let Some(slot) = slot {
-            self.engine.send(Command::SetParam { slot, id, value });
+            self.session
+                .engine_mut()
+                .send(Command::SetParam { slot, id, value });
         }
     }
 
@@ -707,7 +734,8 @@ impl App {
     }
 
     fn param_name(&self, device: DeviceId, id: u32) -> Option<String> {
-        self.engine
+        self.session
+            .engine()
             .host()
             .params(device)?
             .iter()
@@ -720,7 +748,8 @@ impl App {
         if !self.param_undo.has_pending_report(device) {
             return None;
         }
-        self.engine
+        self.session
+            .engine()
             .host()
             .param_base(device, id)
             .filter(|value| value.is_finite())
@@ -761,7 +790,8 @@ impl App {
             .any(|entry| entry.device == device && entry.preset.is_some());
         let baseline = self.param_undo.baseline.get(&device).cloned();
         if deferred_preset
-            || self.doc.in_gesture() && self.param_undo.gesture_device != Some(device)
+            || self.session.document().in_gesture()
+                && self.param_undo.gesture_device != Some(device)
         {
             if deferred_preset || has_unmodified_preset(self.project(), device) {
                 self.param_undo
@@ -778,19 +808,31 @@ impl App {
     }
 
     fn record_parameter_edit(&mut self, edit: &DeferredPluginEdit, label: &str) {
-        let top = self.doc.top_step();
-        let label = if self.doc.in_gesture() { "" } else { label };
-        match self.doc.apply(label, |project| {
+        let top = self.session.document().top_step();
+        let label = if self.session.document().in_gesture() {
+            ""
+        } else {
+            label
+        };
+        match self.session.document_mut().apply(label, |project| {
             Ok(edit.apply(project).unwrap_or_else(|| project.clone()))
         }) {
             Ok(_) => {
-                if let Some(step) = self.doc.top_step().filter(|step| Some(*step) != top) {
+                if let Some(step) = self
+                    .session
+                    .document()
+                    .top_step()
+                    .filter(|step| Some(*step) != top)
+                {
                     self.param_undo.echo.remove(&edit.device);
                     let at = Instant::now() + SNAPSHOT_SLACK;
                     self.param_undo.steps.insert(edit.device, (step, at));
                     self.param_undo.tails.remove(&edit.device);
                     if !edit.bases.is_empty() {
-                        self.engine.host_mut().request_state(edit.device);
+                        self.session
+                            .engine_mut()
+                            .host_mut()
+                            .request_state(edit.device);
                     }
                 }
             }
@@ -838,7 +880,7 @@ impl App {
         if no_document_state && previous_state == state && same_preset {
             return;
         }
-        if let Err(error) = self.doc.apply(label, |project| {
+        if let Err(error) = self.session.document_mut().apply(label, |project| {
             let project = edits::set_saved_plugin_state(project, device, state)?;
             match &preset {
                 Some(preset) => edits::set_device_preset(&project, device, preset.clone()),
@@ -860,7 +902,7 @@ impl App {
         if previous_state == state {
             return;
         }
-        if self.doc.in_gesture() {
+        if self.session.document().in_gesture() {
             self.end_gesture();
         }
         if self.reconcile_previous_live_state(device, previous_state) {
@@ -888,7 +930,7 @@ impl App {
         });
         if recorded.is_some_and(|recorded| *recorded != previous_state.bytes) {
             let label = undo_label::plugin_state(&self.device_name(device));
-            if let Err(error) = self.doc.apply(label, |project| {
+            if let Err(error) = self.session.document_mut().apply(label, |project| {
                 edits::set_saved_plugin_state(project, device, previous_state)
             }) {
                 self.record_edit_error(error);
@@ -908,7 +950,7 @@ impl App {
         state: &Arc<[u8]>,
     ) {
         self.param_undo.discard_pending_report(device);
-        if self.doc.in_gesture() {
+        if self.session.document().in_gesture() {
             self.end_gesture();
         }
         let previous_state = SavedPluginState::from(Arc::clone(previous_state));
@@ -939,7 +981,7 @@ impl App {
         }
         let held = (target.state.clone(), target.parameter_bases.clone());
         let preset = DevicePreset::loaded(source.clone());
-        self.doc.restate(|project| {
+        self.session.document_mut().restate(|project| {
             let (_, _, step) = project.find_device(device)?;
             (step.preset.is_none() && (&step.state, &step.parameter_bases) == (&held.0, &held.1))
                 .then(|| edits::set_device_preset(project, device, Some(preset.clone())).ok())
@@ -970,7 +1012,7 @@ impl App {
         self.param_undo
             .deferred
             .push(DeferredPluginEdit::reported(device, source.clone()));
-        self.engine.host_mut().request_state(device);
+        self.session.engine_mut().host_mut().request_state(device);
     }
 
     /// The state that follows a reported load: one step with its selection. A baseline still
@@ -980,12 +1022,20 @@ impl App {
         let device = edit.device;
         self.param_undo.awaiting.remove(&device);
         self.param_undo.echo.remove(&device);
-        let top = self.doc.top_step();
-        match self.doc.apply("undo-load-preset", |project| {
-            Ok(edit.apply(project).unwrap_or_else(|| project.clone()))
-        }) {
+        let top = self.session.document().top_step();
+        match self
+            .session
+            .document_mut()
+            .apply("undo-load-preset", |project| {
+                Ok(edit.apply(project).unwrap_or_else(|| project.clone()))
+            }) {
             Ok(_) => {
-                if let Some(step) = self.doc.top_step().filter(|step| Some(*step) != top) {
+                if let Some(step) = self
+                    .session
+                    .document()
+                    .top_step()
+                    .filter(|step| Some(*step) != top)
+                {
                     let at = Instant::now() + SNAPSHOT_SLACK;
                     self.param_undo.steps.insert(device, (step, at));
                     self.param_undo.turned.remove(&device);
@@ -1021,7 +1071,8 @@ impl App {
         // A delayed snapshot can carry bytes from before a newer parameter turn. Keep
         // the known bases until the host verifies a capture includes the current edits.
         let current = self
-            .engine
+            .session
+            .engine()
             .host()
             .is_current_param_snapshot(device, &state.bytes);
         let edit = self.param_undo.defer_edit(device);
@@ -1071,11 +1122,16 @@ impl App {
             self.store_root_state(device, state);
             return;
         }
-        if self.engine.host().is_macro_snapshot(device, &state.bytes) {
+        if self
+            .session
+            .engine()
+            .host()
+            .is_macro_snapshot(device, &state.bytes)
+        {
             self.store_macro_snapshot(device, state, now);
             return;
         }
-        let in_gesture = self.doc.in_gesture();
+        let in_gesture = self.session.document().in_gesture();
         if in_gesture && self.param_undo.gesture_device != Some(device) {
             // Not this gesture's change: after it.
             self.defer_plugin_snapshot(device, state);
@@ -1085,7 +1141,11 @@ impl App {
         if !in_gesture
             && let Some(&(step, at)) = self.param_undo.steps.get(&device)
             && now.duration_since(at) < self.param_undo.window
-            && self.doc.amend(step, set).unwrap_or(false)
+            && self
+                .session
+                .document_mut()
+                .amend(step, set)
+                .unwrap_or(false)
         {
             // The window runs from the later of the amendment and the slack after a gesture
             // (`end_gesture`): the immediate answer must not cut the slack short.
@@ -1099,10 +1159,14 @@ impl App {
         let tail = self.param_undo.tails.remove(&device);
         // An edit that changes nothing pushes no step (#220): the top step is then an earlier,
         // unrelated one, which the next snapshot must not amend.
-        let top = self.doc.top_step();
-        if self.doc.apply(label, set).is_ok()
+        let top = self.session.document().top_step();
+        if self.session.document_mut().apply(label, set).is_ok()
             && !in_gesture
-            && let Some(step) = self.doc.top_step().filter(|step| Some(*step) != top)
+            && let Some(step) = self
+                .session
+                .document()
+                .top_step()
+                .filter(|step| Some(*step) != top)
         {
             let at = tail.map_or(now, |tail| tail.max(now));
             self.param_undo.steps.insert(device, (step, at));
@@ -1111,15 +1175,19 @@ impl App {
 
     fn store_macro_snapshot(&mut self, device: DeviceId, state: &SavedPluginState, now: Instant) {
         let set = |p: &Project| edits::set_saved_plugin_state(p, device, state);
-        if self.doc.in_gesture() && self.param_undo.macro_gesture.contains(&device) {
-            let _ = self.doc.apply("", set);
+        if self.session.document().in_gesture() && self.param_undo.macro_gesture.contains(&device) {
+            let _ = self.session.document_mut().apply("", set);
         } else if !self
             .param_undo
             .macro_steps
             .get(&device)
             .is_some_and(|&(step, at)| {
                 now.duration_since(at) < self.param_undo.window
-                    && self.doc.amend(step, set).unwrap_or(false)
+                    && self
+                        .session
+                        .document_mut()
+                        .amend(step, set)
+                        .unwrap_or(false)
             })
         {
             self.store_root_state(device, state);
@@ -1128,7 +1196,7 @@ impl App {
 
     /// Keep the last live edit in the document before its processor is retired.
     pub(crate) fn store_retiring_snapshot(&mut self, device: DeviceId, state: &SavedPluginState) {
-        if self.doc.in_gesture() {
+        if self.session.document().in_gesture() {
             self.end_gesture();
         }
         // This is the final state, even if the initial baseline request never completed.
@@ -1140,7 +1208,7 @@ impl App {
     /// that still holds what it came up with ([`App::device_up`]) gets that state into the
     /// document too (untracked: it is no edit), so the file has it.
     pub(crate) fn store_snapshot_for_save(&mut self, device: DeviceId, state: &SavedPluginState) {
-        if self.doc.in_gesture()
+        if self.session.document().in_gesture()
             && !self.param_undo.has_pending_report(device)
             && self
                 .param_undo
@@ -1179,7 +1247,8 @@ impl App {
             return;
         }
         let _ = self
-            .doc
+            .session
+            .document_mut()
             .apply_untracked_to_root(|p| edits::set_saved_plugin_state(p, device, state));
     }
 
@@ -1209,7 +1278,7 @@ impl App {
             && !self.param_undo.baseline.contains_key(&device)
             && self.param_undo.awaiting.insert(device)
         {
-            self.engine.host_mut().request_state(device);
+            self.session.engine_mut().host_mut().request_state(device);
         }
     }
 
@@ -1249,7 +1318,8 @@ impl App {
                     && !komponist_plugins::requires_bundled(&device.plugin)
                     && let Some(baseline) = self.param_undo.baseline.get(&device.id).cloned()
                 {
-                    self.engine
+                    self.session
+                        .engine_mut()
                         .host_mut()
                         .restore_saved_state(device.id, &baseline);
                 }

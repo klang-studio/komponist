@@ -39,7 +39,7 @@ impl App {
         if clips.is_empty() {
             return;
         }
-        let at = self.engine.playhead();
+        let at = self.session.engine().playhead();
         self.apply_with("undo-split-clips", |p| edits::split_clips(p, &clips, at));
     }
 

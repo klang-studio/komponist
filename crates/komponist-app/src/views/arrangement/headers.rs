@@ -658,7 +658,7 @@ mod tests {
                 let mut ctx = ViewCtx::new(
                     &project,
                     &mut app.ui,
-                    &app.engine,
+                    app.session.engine(),
                     &mut app.meters,
                     &app.keymap,
                     &mut app.queue,

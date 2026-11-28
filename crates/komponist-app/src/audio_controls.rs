@@ -19,14 +19,18 @@ impl App {
         }
         let reason = match track.audio.input {
             AudioInput::None => Some(self.lang.audio_arm_no_input().to_owned()),
-            AudioInput::Hardware(input) if !self.engine.hardware_input_available(input) => Some(
-                self.lang
-                    .audio_arm_unavailable(crate::views::audio_inputs::input_label(
-                        self.lang,
-                        self.project(),
-                        track.audio.input,
-                    )),
-            ),
+            AudioInput::Hardware(input)
+                if !self.session.engine().hardware_input_available(input) =>
+            {
+                Some(
+                    self.lang
+                        .audio_arm_unavailable(crate::views::audio_inputs::input_label(
+                            self.lang,
+                            self.project(),
+                            track.audio.input,
+                        )),
+                )
+            }
             AudioInput::Bus(bus)
                 if !komponist_model::routing::input_sources(self.project(), id).contains(&bus) =>
             {

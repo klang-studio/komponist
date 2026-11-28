@@ -98,7 +98,7 @@ impl App {
         source: ClapPresetSource,
         track: Option<TrackId>,
     ) {
-        let Some(role) = self.engine.host().role(&plugin) else {
+        let Some(role) = self.session.engine().host().role(&plugin) else {
             return;
         };
         if role != DeviceRole::Instrument && track.is_none() {
@@ -111,7 +111,12 @@ impl App {
             );
             return;
         }
-        let Some(job) = self.engine.host().prepare_clap_preset(&plugin, &source) else {
+        let Some(job) = self
+            .session
+            .engine()
+            .host()
+            .prepare_clap_preset(&plugin, &source)
+        else {
             self.set_status(self.lang.devices_preset_load_failed(), StatusKind::Error);
             return;
         };
@@ -216,7 +221,9 @@ impl App {
 
 impl App {
     pub(super) fn open_user_preset_dialog(&mut self, device: DeviceId, save: bool) {
-        if self.engine.host().supports_user_presets(device) && !self.user_presets.is_busy() {
+        if self.session.engine().host().supports_user_presets(device)
+            && !self.user_presets.is_busy()
+        {
             self.open_file_browser(if save {
                 Purpose::SavePreset(device)
             } else {
@@ -230,7 +237,12 @@ impl App {
             return;
         };
         let plugin_id = target.plugin.id.clone();
-        if self.engine.host_mut().capture_clap_preset(device) {
+        if self
+            .session
+            .engine_mut()
+            .host_mut()
+            .capture_clap_preset(device)
+        {
             self.user_presets.capture = Some((device, plugin_id, path));
         } else {
             self.user_preset_save_failed("device is not ready to capture a preset");
@@ -291,7 +303,7 @@ impl App {
             .as_ref()
             .is_some_and(|(device, _, _)| {
                 self.project().find_device(*device).is_none()
-                    || !self.engine.host().supports_user_presets(*device)
+                    || !self.session.engine().host().supports_user_presets(*device)
             })
         {
             self.user_presets.capture = None;
@@ -309,7 +321,8 @@ impl App {
                     .is_some_and(|(_, _, target)| target.plugin.id == preset.plugin_id);
                 if matches
                     && self
-                        .engine
+                        .session
+                        .engine_mut()
                         .host_mut()
                         .load_user_preset(device, preset.state)
                 {

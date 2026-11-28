@@ -120,7 +120,7 @@ impl App {
     }
 
     pub(crate) fn drop_plugin_assets(&mut self, device: DeviceId, files: &[PathBuf]) {
-        let Some(assets) = self.engine.host().asset_slots(device) else {
+        let Some(assets) = self.session.engine().host().asset_slots(device) else {
             return;
         };
         if assets.slots.len() != files.len() {
@@ -243,10 +243,14 @@ impl App {
                 links.remove(&slot);
             }
         }
-        let uses_prepare = self.engine.host().supports_asset_edit_state(device);
+        let uses_prepare = self
+            .session
+            .engine()
+            .host()
+            .supports_asset_edit_state(device);
         if uses_prepare {
             // Keep any preceding parameter gesture separate from the file edit's history.
-            if self.doc.in_gesture() {
+            if self.session.document().in_gesture() {
                 self.end_gesture();
             }
             // The device prepares from the document's saved state: a knob turn that has no
@@ -273,11 +277,11 @@ impl App {
             reloads,
             approved_files,
         };
-        match self
-            .engine
-            .host_mut()
-            .prepare_asset_edit(&edit.source, &changes, request)
-        {
+        match self.session.engine_mut().host_mut().prepare_asset_edit(
+            &edit.source,
+            &changes,
+            request,
+        ) {
             Ok(AssetEditPreparation::Ready(state)) => self.commit_plugin_asset_edit(edit, state),
             Ok(AssetEditPreparation::Pending) => {
                 self.dialogs
@@ -313,14 +317,20 @@ impl App {
             .remove(&device)
             .is_some()
         {
-            self.engine.host_mut().cancel_asset_edit(device);
+            self.session
+                .engine_mut()
+                .host_mut()
+                .cancel_asset_edit(device);
         }
     }
 
     pub(crate) fn cancel_plugin_asset_edits(&mut self) {
         self.dialogs.plugin_assets.waiting_asset_edits.clear();
         for (device, _) in std::mem::take(&mut self.dialogs.plugin_assets.pending_asset_edits) {
-            self.engine.host_mut().cancel_asset_edit(device);
+            self.session
+                .engine_mut()
+                .host_mut()
+                .cancel_asset_edit(device);
         }
     }
 
@@ -341,10 +351,14 @@ impl App {
         let Some((_, _, current)) = self.project().find_device(device) else {
             return;
         };
-        if self.doc.in_gesture()
+        if self.session.document().in_gesture()
             || self.has_unsnapshotted_param_edits(device)
             || !edit.matches_source(current, self.project_path())
-            || !self.engine.host().supports_asset_edit_state(device)
+            || !self
+                .session
+                .engine()
+                .host()
+                .supports_asset_edit_state(device)
         {
             self.report_asset_edit_failed(device);
             return;
@@ -379,7 +393,7 @@ impl App {
                 .approved_plugin_files
                 .extend(edit.approved_files);
             if !edit.reloads.is_empty() {
-                self.engine.host_mut().set_asset_bindings(
+                self.session.engine_mut().host_mut().set_asset_bindings(
                     device,
                     &Bindings {
                         slots: edit.reloads,
@@ -391,7 +405,12 @@ impl App {
 
     /// A parameter edit of `device` went to the plugin; its snapshot is not in the document yet.
     pub(crate) fn remember_param_edit(&mut self, device: DeviceId, id: u32) {
-        if self.engine.host().supports_asset_edit_state(device) {
+        if self
+            .session
+            .engine()
+            .host()
+            .supports_asset_edit_state(device)
+        {
             self.dialogs
                 .plugin_assets
                 .unsnapshotted_params
@@ -402,7 +421,7 @@ impl App {
     }
 
     pub(crate) fn pending_param_bases(&self, device: DeviceId) -> BTreeMap<u32, f64> {
-        let host = self.engine.host();
+        let host = self.session.engine().host();
         self.dialogs
             .plugin_assets
             .unsnapshotted_params
@@ -434,7 +453,11 @@ impl App {
     /// settles the remembered edits.
     pub(crate) fn reconcile_param_edits(&mut self, device: DeviceId, state: &Arc<[u8]>) {
         if self.has_unsnapshotted_param_edits(device)
-            && self.engine.host().is_current_param_snapshot(device, state)
+            && self
+                .session
+                .engine()
+                .host()
+                .is_current_param_snapshot(device, state)
         {
             self.forget_param_edits(device);
         }
@@ -447,7 +470,7 @@ impl App {
         if key > 127 {
             return;
         }
-        self.engine.send(Command::LiveNote {
+        self.session.engine_mut().send(Command::LiveNote {
             track,
             key,
             velocity: AUDITION_VELOCITY,
@@ -471,7 +494,8 @@ impl App {
         if key > 127
             || !found.asset_links.contains_key(&slot)
             || !self
-                .engine
+                .session
+                .engine()
                 .host()
                 .asset_slots(device)
                 .is_some_and(|assets| {
@@ -480,14 +504,15 @@ impl App {
                         .iter()
                         .any(|asset| asset.id == slot && asset.kind == AssetKind::AudioSample)
                 })
-            || self.engine.host().status(device) != DeviceStatus::Ok
+            || self.session.engine().host().status(device) != DeviceStatus::Ok
             || komponist_plugin_api::waveform_preview::encode_time(time).is_none()
         {
             return;
         }
         self.stop_waveform_preview();
         if let Some(time) = time {
-            self.engine
+            self.session
+                .engine()
                 .host()
                 .preview_waveform(device, slot, Some(time));
             self.dialogs.plugin_assets.waveform_preview =
@@ -499,7 +524,7 @@ impl App {
 
     fn start_waveform_note(&mut self, track: TrackId, key: u8) {
         self.dialogs.plugin_assets.waveform_preview = Some(WaveformPreview::Sample { track, key });
-        self.engine.send(Command::LiveNote {
+        self.session.engine_mut().send(Command::LiveNote {
             track,
             key,
             velocity: AUDITION_VELOCITY,
@@ -509,14 +534,17 @@ impl App {
     pub(crate) fn stop_waveform_preview(&mut self) {
         match self.dialogs.plugin_assets.waveform_preview.take() {
             Some(WaveformPreview::Sample { track, key }) => {
-                self.engine.send(Command::LiveNote {
+                self.session.engine_mut().send(Command::LiveNote {
                     track,
                     key,
                     velocity: 0,
                 });
             }
             Some(WaveformPreview::Asset { device, slot }) => {
-                self.engine.host().preview_waveform(device, slot, None);
+                self.session
+                    .engine()
+                    .host()
+                    .preview_waveform(device, slot, None);
             }
             None => {}
         }
@@ -537,7 +565,7 @@ impl App {
         held.retain(|(at, ..)| *at > now);
         let next = held.iter().map(|(at, ..)| *at).min();
         for (track, key) in due {
-            self.engine.send(Command::LiveNote {
+            self.session.engine_mut().send(Command::LiveNote {
                 track,
                 key,
                 velocity: 0,
@@ -549,7 +577,7 @@ impl App {
     }
 
     fn plugin_asset_kind(&self, device: DeviceId, slot: u32) -> Option<AssetKind> {
-        if let Some(live) = self.engine.host().asset_slots(device)
+        if let Some(live) = self.session.engine().host().asset_slots(device)
             && let Some(slot) = live.slots.iter().find(|declared| declared.id == slot)
         {
             return Some(slot.kind);
@@ -767,7 +795,7 @@ mod tests {
             current.asset_links.get(&slot),
             Some(&AssetLink::new(&found, None))
         );
-        assert!(app.doc.undo());
+        assert!(app.session.document_mut().undo());
         let current = app.project().find_device(device).unwrap().2;
         assert_eq!(current.asset_links.get(&slot), Some(&missing));
     }
@@ -843,13 +871,13 @@ mod tests {
             request
         );
         app.finish_plugin_asset_edit(device, stale, &Ok(None));
-        assert!(app.doc.top_step().is_none());
+        assert!(app.session.document().top_step().is_none());
         app.finish_plugin_asset_edit(device, request, &Ok(None));
         assert_eq!(
             app.project().find_device(device).unwrap().2.asset_links,
             [(0, replaced), (1, second)].into()
         );
-        assert!(app.doc.undo());
+        assert!(app.session.document_mut().undo());
         assert!(
             app.project()
                 .find_device(device)
@@ -858,7 +886,7 @@ mod tests {
                 .asset_links
                 .is_empty()
         );
-        assert!(app.doc.top_step().is_none());
+        assert!(app.session.document().top_step().is_none());
     }
 
     #[test]
@@ -900,7 +928,7 @@ mod tests {
                 .asset_links
                 .is_empty()
         );
-        assert!(app.doc.top_step().is_none());
+        assert!(app.session.document().top_step().is_none());
 
         app.update_plugin_assets(device, [(0, Some(first))]);
         let first_request = app.dialogs.plugin_assets.pending_asset_edits[&device].request;
@@ -919,20 +947,21 @@ mod tests {
             app.dialogs.plugin_assets.pending_asset_edits[&device].request,
             second_request
         );
-        assert!(app.doc.top_step().is_none());
+        assert!(app.session.document().top_step().is_none());
 
         let latest = Arc::<[u8]>::from([5, 6]).into();
-        app.doc
+        app.session
+            .document_mut()
             .apply("manual edit", |project| {
                 edits::set_saved_plugin_state(project, device, &latest)
             })
             .unwrap();
-        let manual_step = app.doc.top_step();
+        let manual_step = app.session.document().top_step();
         app.finish_plugin_asset_edit(device, second_request, &result);
         let current = app.project().find_device(device).unwrap().2;
         assert!(current.asset_links.is_empty());
         assert!(current.has_saved_state(&latest));
-        assert_eq!(app.doc.top_step(), manual_step);
+        assert_eq!(app.session.document().top_step(), manual_step);
 
         app.update_plugin_assets(device, [(0, Some(second.clone()))]);
         let valid_request = app.dialogs.plugin_assets.pending_asset_edits[&device].request;
@@ -940,9 +969,9 @@ mod tests {
         let current = app.project().find_device(device).unwrap().2;
         assert_eq!(current.asset_links.get(&0), Some(&second));
         assert!(current.has_saved_state(result.as_ref().unwrap().as_ref().unwrap()));
-        assert_ne!(app.doc.top_step(), manual_step);
-        assert!(app.doc.undo());
-        assert_eq!(app.doc.top_step(), manual_step);
+        assert_ne!(app.session.document().top_step(), manual_step);
+        assert!(app.session.document_mut().undo());
+        assert_eq!(app.session.document().top_step(), manual_step);
         let current = app.project().find_device(device).unwrap().2;
         assert!(current.asset_links.is_empty());
         assert!(current.has_saved_state(&latest));

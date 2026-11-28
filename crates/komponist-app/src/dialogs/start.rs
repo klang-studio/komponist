@@ -775,7 +775,7 @@ impl crate::App {
         let mut recent = self.dialogs.start.rows(t, now);
         self.recovery_rows(&mut recent, now);
 
-        let audio = match self.engine.audio_state() {
+        let audio = match self.session.engine().audio_state() {
             AudioState::NoDevice { .. } => (Health::Error, t.start_audio_none().to_owned()),
             AudioState::Stopped => (Health::Idle, t.start_audio_stopped().to_owned()),
             AudioState::Running { config, .. } if config.host == HostKind::Null => {
@@ -797,7 +797,7 @@ impl crate::App {
                 )
             }
         };
-        let inputs: Vec<String> = self.engine.midi().map_or_else(Vec::new, |hub| {
+        let inputs: Vec<String> = self.session.engine().midi().map_or_else(Vec::new, |hub| {
             let ports = hub.ports();
             let all: Vec<&str> = ports.iter().map(|p| p.name.as_str()).collect();
             ports
@@ -811,7 +811,7 @@ impl crate::App {
         } else {
             (Health::Ok, inputs.join(", "))
         };
-        let host = self.engine.host();
+        let host = self.session.engine().host();
         let plugins = if host.is_scanning() {
             t.start_plugins_scanning(&settings_shortcut)
         } else {

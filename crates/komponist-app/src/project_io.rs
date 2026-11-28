@@ -222,7 +222,7 @@ impl App {
             ProjectAction::Open => self.guard(Pending::Open),
             ProjectAction::Quit => self.guard(Pending::Quit),
             ProjectAction::OpenPath(path) => self.guard(Pending::OpenPath(path)),
-            ProjectAction::Save => match self.project_path.clone() {
+            ProjectAction::Save => match self.project_path().map(Path::to_path_buf) {
                 // A recovered copy whose file is gone asks for a place (crash recovery, variant d).
                 Some(path) if !self.recovery_ui.save_asks => {
                     self.save_to(&path);
@@ -271,10 +271,7 @@ impl App {
             _ => a == b,
         };
         if self.ui.screen == Screen::Project
-            && self
-                .project_path
-                .as_deref()
-                .is_some_and(|open| same(open, &path))
+            && self.project_path().is_some_and(|open| same(open, &path))
         {
             return;
         }
@@ -287,10 +284,10 @@ impl App {
 
     /// Whether leaving the project loses something: unsaved changes or a running take with notes.
     fn has_unsaved(&self) -> bool {
-        self.doc.is_dirty()
+        self.session.document().is_dirty()
             || self.has_unsaved_take()
             || self.param_undo.has_pending_text()
-            || self.engine.host().has_pending_state_edits()
+            || self.session.engine().host().has_pending_state_edits()
             || !self.deferred_plugin_edits().is_empty()
     }
 
@@ -320,7 +317,7 @@ impl App {
 
     pub(crate) fn resume_after_flatten(&mut self) {
         if !self.export.is_flattening()
-            && !self.engine.is_detached()
+            && !self.session.engine().is_detached()
             && self.dialogs.overlay.is_none()
             && let Some(next) = self.dialogs.after_flatten.take()
         {
@@ -341,7 +338,7 @@ impl App {
             }
             Pending::Template => {
                 let Some((drums, hexa)) =
-                    new_project::template_instruments(self.engine.host().catalog())
+                    new_project::template_instruments(self.session.engine().host().catalog())
                 else {
                     self.set_status(
                         "Bundled CLAP devices are unavailable".to_owned(),
@@ -437,7 +434,7 @@ impl App {
         let name = self.project().name.clone();
         let repaired =
             (self.dialogs.repaired > 0).then(|| self.lang.project_repaired(self.dialogs.repaired));
-        if self.engine.host().is_scanning() {
+        if self.session.engine().host().is_scanning() {
             self.dialogs.missing_check = true;
             let text = match &repaired {
                 Some(repaired) => self.lang.project_opened_repaired(&name, repaired),
@@ -447,7 +444,7 @@ impl App {
             return;
         }
         self.dialogs.missing_check = false;
-        let missing = self.engine.host().missing_plugins(self.project());
+        let missing = self.session.engine().host().missing_plugins(self.project());
         let audio = crate::dialogs::missing_plugins::missing_audio(
             self.project(),
             self.project_dir().as_deref(),
@@ -456,7 +453,7 @@ impl App {
             self.lang,
             self.project(),
             self.project_dir().as_deref(),
-            self.engine.host().catalog(),
+            self.session.engine().host().catalog(),
         );
         if missing.is_empty() && audio.is_empty() && assets.is_empty() {
             let text = match &repaired {
@@ -516,10 +513,11 @@ impl App {
         // Route queued GUI edits before requesting state, so a temporary parameter cannot be
         // mistaken for a persisted plugin value.
         self.drain_events();
-        self.engine.refresh_snapshot_automation(self.doc.project());
+        self.session.refresh_snapshot_automation();
         let edit_revision = self.param_undo.live_edit_revision();
         let mut outcome = self
-            .engine
+            .session
+            .engine_mut()
             .host_mut()
             .snapshot_for_save(crate::app::SNAPSHOT_TIMEOUT);
         let before_capture_events = self.device_events().len();
@@ -571,7 +569,7 @@ impl App {
         if !self.await_audio_take() {
             return false;
         }
-        let playhead = self.engine.playhead();
+        let playhead = self.session.engine().playhead();
         let old_dir = self
             .project_dir()
             .map(|directory| komponist_model::paths::absolute(&directory));
@@ -598,7 +596,7 @@ impl App {
                 .as_ref()
                 .and_then(|collector| collector.placed(source))
         };
-        let mut document = self.doc.clone();
+        let mut document = self.session.document().clone();
         document.rewrite_untracked(|project| {
             crate::project_assets::rebase_project_links(
                 project,
@@ -643,7 +641,7 @@ impl App {
         }
         // A new file renames the project after it; the rename happens only if writing works.
         let rename = name_from_path(&path).filter(|name| {
-            self.project_path.as_deref() != Some(path.as_path()) && *name != self.project().name
+            self.project_path() != Some(path.as_path()) && *name != self.project().name
         });
         let file_ahead = for_file.is_some();
         let projected = for_file.as_ref().unwrap_or_else(|| document.project());
@@ -671,38 +669,27 @@ impl App {
         };
         match written {
             Ok(not_durable) => {
-                let previous = std::sync::Arc::clone(self.doc.project());
-                self.doc = document;
-                if let Some(name) = rename {
-                    self.untracked(ProjectProp::Name(name));
-                }
+                let rename_error = rename.and_then(|name| {
+                    document
+                        .apply_untracked(|project| {
+                            komponist_model::edits::set_project_prop(
+                                project,
+                                ProjectProp::Name(name.clone()),
+                            )
+                        })
+                        .err()
+                });
                 if file_ahead {
                     // The file holds a running take or plugin state still waiting on a gesture.
-                    self.doc.forget_saved();
+                    document.forget_saved();
                 } else {
-                    self.doc.mark_saved();
+                    document.mark_saved();
                 }
-                self.project_path = Some(path.clone());
+                self.session.accept_saved_project(document, path.clone());
+                if let Some(error) = rename_error {
+                    self.record_edit_error(error);
+                }
                 self.recovery_ui.save_asks = false;
-                let dir = self.project_dir();
-                let project = std::sync::Arc::clone(self.doc.project());
-                let host = self.engine.host_mut();
-                host.set_project_dir(dir);
-                // Future snapshots and renders resolve links against the new folder. Hand the
-                // changed links to the devices only after the file write and directory change
-                // succeeded.
-                for device in project
-                    .tracks
-                    .iter()
-                    .flat_map(|track| &track.channel.devices)
-                    .chain(&project.master.devices)
-                {
-                    if let Some((_, _, old)) = previous.find_device(device.id)
-                        && old.asset_links != device.asset_links
-                    {
-                        host.sync_asset_links(device.id, &old.asset_links, &device.asset_links);
-                    }
-                }
                 self.set_status(
                     self.lang
                         .project_saved(crate::dialogs::format::tilde(&path)),
@@ -804,8 +791,7 @@ impl App {
     pub(crate) fn open_file_browser(&mut self, purpose: Purpose) {
         // A recovered project whose folder is gone starts elsewhere (crash recovery, variant d).
         let dir = self
-            .project_path
-            .as_deref()
+            .project_path()
             .and_then(Path::parent)
             .filter(|dir| dir.is_dir())
             .map(Path::to_path_buf)
@@ -877,7 +863,7 @@ impl App {
             // the take stays in the document and the project stays open.
             Answer::Save => {
                 self.stop_take();
-                match self.project_path.clone() {
+                match self.project_path().map(Path::to_path_buf) {
                     // As Ctrl S: a recovered copy whose file is gone asks for a place first.
                     Some(path) if !self.recovery_ui.save_asks => {
                         if self.save_to(&path) {
@@ -1168,7 +1154,8 @@ mod tests {
         assert!(app.save_to(&old_project));
         // Give the document both an undo and a redo snapshot containing the links.
         for tempo in [110.0, 115.0] {
-            app.doc
+            app.session
+                .document_mut()
                 .apply("Tempo", |p| {
                     edits::set_project_prop(
                         p,
@@ -1177,7 +1164,7 @@ mod tests {
                 })
                 .unwrap();
         }
-        assert!(app.doc.undo());
+        assert!(app.session.document_mut().undo());
 
         let check_links = |project: &Project, directory: &Path, relative: &Path| {
             let (_, _, device) = project.find_device(sampler).unwrap();
@@ -1202,17 +1189,17 @@ mod tests {
 
         let destination = new_dir.join("Copy.komponist");
         std::fs::create_dir(&destination).unwrap();
-        let revision = app.doc.revision();
+        let revision = app.session.document().revision();
         assert!(!app.save_to(&destination));
-        assert_eq!(app.doc.revision(), revision);
+        assert_eq!(app.session.document().revision(), revision);
         assert_eq!(app.project_path(), Some(old_project.as_path()));
         check_links(app.project(), &old_dir, Path::new("kick.wav"));
-        assert!(app.doc.undo());
+        assert!(app.session.document_mut().undo());
         check_links(app.project(), &old_dir, Path::new("kick.wav"));
-        assert!(app.doc.redo());
-        assert!(app.doc.redo());
+        assert!(app.session.document_mut().redo());
+        assert!(app.session.document_mut().redo());
         check_links(app.project(), &old_dir, Path::new("kick.wav"));
-        assert!(app.doc.undo());
+        assert!(app.session.document_mut().undo());
 
         std::fs::remove_dir(&destination).unwrap();
         assert!(app.save_to(&destination));
@@ -1220,11 +1207,11 @@ mod tests {
         let relative = Path::new("../kick.wav");
         check_links(&load_project(&destination).unwrap(), &new_dir, relative);
         check_links(app.project(), &new_dir, relative);
-        assert!(!app.doc.is_dirty());
-        assert!(app.doc.undo());
+        assert!(!app.session.document().is_dirty());
+        assert!(app.session.document_mut().undo());
         check_links(app.project(), &new_dir, relative);
-        assert!(app.doc.redo());
-        assert!(app.doc.redo());
+        assert!(app.session.document_mut().redo());
+        assert!(app.session.document_mut().redo());
         check_links(app.project(), &new_dir, relative);
         drop(app);
         std::fs::remove_dir_all(dir).unwrap();
