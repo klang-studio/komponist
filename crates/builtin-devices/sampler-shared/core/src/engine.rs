@@ -898,6 +898,53 @@ mod tests {
         }
     }
 
+    /// #381: a finite region longer than one hop, transposed down, must still read its last
+    /// source frames. With voice ID 1 the first hop is 48 frames early, so without anchoring the
+    /// final grain starts at frame 1,488 and reads source only up to about frame 1,844.
+    #[test]
+    fn long_transposed_regions_play_the_tail_in_both_directions() {
+        use crate::PlaybackDirection::{Forward, Reverse};
+
+        const LEN: usize = 2_200;
+        for direction in [Forward, Reverse] {
+            let mut t = setup(&[]);
+            let slot = slot_index(0, 0);
+            let mut data = vec![0.0; LEN];
+            data[2_100..2_150].fill(0.5);
+            if direction == Reverse {
+                data.reverse();
+            }
+            t.samples[slot] = Some(Arc::new(Sample::mono(SR, data)));
+            let mut engine = Engine::new(SR);
+            engine.trigger(
+                SampleTrigger {
+                    pad: 0,
+                    slot,
+                    key: 60,
+                    note_id: None,
+                    channel: None,
+                    velocity: 1.0,
+                    tune: -12.0,
+                    independent_pitch: true,
+                    region: crate::PlaybackRegion {
+                        direction,
+                        ..Default::default()
+                    },
+                },
+                t.samples[slot].as_deref().unwrap(),
+                &t.settings[0],
+            );
+            assert_eq!(engine.voices[0].id % 16, 1);
+            let output: Vec<_> = (0..LEN).map(|_| t.render(&mut engine, 1)[0][0]).collect();
+            assert!(
+                output.iter().any(|&frame| frame > 0.35),
+                "{direction:?}: the tail was not played"
+            );
+            assert_eq!(t.render(&mut engine, 1)[0], [0.0; 2]);
+            assert_eq!(engine.active_voices(), 0);
+        }
+    }
+
     #[test]
     fn independent_pitch_respects_slice_bounds_and_reverse_loop_timing() {
         let mut t = setup(&[]);

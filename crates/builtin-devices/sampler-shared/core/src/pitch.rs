@@ -98,20 +98,21 @@ impl PitchReader {
                 playback: *playback,
                 pos,
             };
-            if self.short {
-                // Anchor the last grain to the end of the tempo timeline so transposing
-                // down cannot omit the tail. Short hops need no phase search.
-                if let Some(remaining) = playback.remaining_frames(pos, clock_rate)
-                    && remaining <= self.hop
-                {
-                    let steps = f64::from(remaining.saturating_sub(1));
-                    next.pos = playback.offset_in_region(pos, (clock_rate - rate) * steps);
-                    if remaining > 1 {
-                        self.overlap = self.overlap.min(remaining - 1);
-                    } else {
-                        self.outgoing = None;
-                    }
+            // Anchor the last grain of a finite region to the end of the tempo timeline so
+            // transposing down cannot omit the tail. Earlier hops and loops keep the phase
+            // search; short hops need none.
+            if let Some(remaining) = playback.remaining_frames(pos, clock_rate)
+                && remaining <= self.hop
+            {
+                let steps = f64::from(remaining.saturating_sub(1));
+                next.pos = playback.offset_in_region(pos, (clock_rate - rate) * steps);
+                if remaining > 1 {
+                    self.overlap = self.overlap.min(remaining - 1);
+                } else {
+                    self.outgoing = None;
                 }
+                self.current = next;
+            } else if self.short {
                 self.current = next;
             } else {
                 self.current = self.align(sample, next, rate);
