@@ -38,6 +38,9 @@ const BAR_TOLERANCE: f64 = 0.05;
 /// Supplies the names used in saved MIDI takes and live recording clips for one recording.
 pub trait TakeNames: std::fmt::Debug + Send + Sync {
     /// Formats a numbered take, with a marker when some recorded events were lost.
+    ///
+    /// Use `Take ` followed by the decimal number. Append an annotation after ` · ` when needed.
+    /// [`edits::next_take_number`] reads that format from saved takes.
     fn take(&self, number: u32, incomplete: bool) -> String;
 
     /// Formats the live clip's name around its take name.

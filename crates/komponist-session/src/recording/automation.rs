@@ -9,7 +9,7 @@ use komponist_model::automation::{
     self, AutomationMode, AutomationOwner, AutomationTarget, LaneId, Point, Points, Shape,
 };
 use komponist_model::edits::{EditResult, automation as edits};
-use komponist_model::{ClipId, DeviceId, Project, Tick};
+use komponist_model::{ClipId, DeviceId, MAX_DOC_TICK, Project, Tick};
 
 use crate::engine_sync::AutomationDraft;
 
@@ -114,6 +114,15 @@ struct RecordedSegment {
 }
 
 impl RecordedSegment {
+    fn new(start: Tick, points: Points, base: f32) -> Self {
+        // Points clamps ticks to the document range. Keep the recorded interval in that range.
+        Self {
+            start: start.clamp(-MAX_DOC_TICK, MAX_DOC_TICK),
+            points,
+            base,
+        }
+    }
+
     fn replace(&self, original: &Points) -> Points {
         automation::replace_recorded_points(original, self.start, &self.points, self.base)
     }
@@ -277,11 +286,11 @@ impl AutomationCapture {
             if let Some(segment) = &write.segment
                 && &segment.destination == destination
             {
-                let preview = RecordedSegment {
-                    start: segment.start,
-                    points: Points::new(segment.raw.clone()),
-                    base: write.base,
-                };
+                let preview = RecordedSegment::new(
+                    segment.start,
+                    Points::new(segment.raw.clone()),
+                    write.base,
+                );
                 result = Some(preview.replace(result.as_ref().unwrap_or(original)));
             }
         }
@@ -520,15 +529,32 @@ impl AutomationCapture {
         matches: impl FnMut(&mut Write) -> bool,
     ) {
         for mut write in self.writing.extract_if(.., matches) {
+            let Some(mut segment) = write.segment.take() else {
+                continue;
+            };
             let finish = if write.mode == AutomationMode::Latch {
+                if let Some(held) = segment.raw.last().map(|point| point.value) {
+                    // The transport can stop beyond a clip edge without delivering a sample there.
+                    while segment.end() < tick {
+                        let boundary = segment.end();
+                        if let Some((destination, points)) =
+                            finish_segment(project, segment, &write, boundary, Finish::Boundary)
+                        {
+                            self.finished.entry(destination).or_default().push(points);
+                            self.completed_revision = next_draft_revision();
+                        }
+                        segment = segment_at(project, &write, boundary);
+                        segment.append(boundary, held, write.stepped);
+                        segment.boundary_anchor = true;
+                    }
+                }
                 Finish::LatchEnd
             } else {
                 Finish::Boundary
             };
-            if let Some(segment) = write.segment.take()
-                && let Some(done) = finish_segment(project, segment, &write, tick, finish)
+            if let Some((destination, points)) =
+                finish_segment(project, segment, &write, tick, finish)
             {
-                let (destination, points) = done;
                 self.finished.entry(destination).or_default().push(points);
                 self.completed_revision = next_draft_revision();
             }
@@ -662,11 +688,7 @@ fn finish_segment(
     }
     Some((
         segment.destination,
-        RecordedSegment {
-            start: segment.start,
-            points: Points::new(points),
-            base: write.base,
-        },
+        RecordedSegment::new(segment.start, Points::new(points), write.base),
     ))
 }
 
@@ -909,5 +931,106 @@ mod tests {
             automation::value_at(envelope.points.as_slice(), Tick(100)),
             Some(0.4)
         );
+    }
+
+    #[test]
+    fn stopping_a_latch_after_a_clip_edge_carries_the_held_value_into_the_lane() {
+        let project = fixtures::demo_project();
+        let track = project
+            .tracks
+            .iter()
+            .find(|track| track.name == "Lead")
+            .unwrap();
+        let owner = AutomationOwner::Track(track.id);
+        let clip = &track.clips[0];
+        let (clip_id, start, end) = (clip.id, clip.start, clip.end());
+        let target = AutomationTarget::Pan;
+        let project =
+            edits::add_clip_automation(&project, clip_id, target.clone(), "Pan".into()).unwrap();
+        let project = edits::set_clip_points(
+            &project,
+            clip_id,
+            &target,
+            Points::new(vec![Point::linear(Tick::ZERO, 0.3)]),
+        )
+        .unwrap();
+        let lane = edits::lanes(&project, owner)
+            .unwrap()
+            .lane(&target)
+            .unwrap()
+            .id;
+        let original = Points::new(vec![Point::linear(Tick::ZERO, 0.3)]);
+        let project = edits::set_lane_points(&project, owner, lane, original.clone()).unwrap();
+        let project = edits::set_lane_mode(&project, owner, lane, AutomationMode::Latch).unwrap();
+
+        let finish_at = |stop| {
+            let mut pass = AutomationCapture::default();
+            pass.open(&project, owner, target.clone(), false, 0.3);
+            pass.value(&project, owner, &target, end - Tick(10), 0.8);
+            pass.end_segments(&project, stop);
+            pass.apply(&project).unwrap()
+        };
+        let at_edge = finish_at(end);
+        let lane_points = |project: &Project| {
+            edits::lanes(project, owner)
+                .unwrap()
+                .lane(&target)
+                .unwrap()
+                .points
+                .clone()
+        };
+        assert_eq!(lane_points(&at_edge), original);
+
+        let stop = end + Tick(20);
+        let continued = finish_at(stop);
+        let envelope = &continued.find_clip(clip_id).unwrap().1.automation[0];
+        assert_eq!(
+            automation::value_at(envelope.points.as_slice(), end - start - Tick(1)),
+            Some(0.8),
+        );
+        let points = lane_points(&continued);
+        for tick in [end, end + Tick(10), stop] {
+            assert_eq!(
+                automation::value_at(points.as_slice(), tick),
+                Some(0.8),
+                "{tick:?}"
+            );
+        }
+        assert_eq!(
+            automation::value_at(points.as_slice(), stop + Tick(1)),
+            Some(0.3)
+        );
+    }
+
+    #[test]
+    fn repeating_a_latch_beyond_the_document_limit_keeps_a_valid_range() {
+        let owner = AutomationOwner::Master;
+        let target = AutomationTarget::Pan;
+        let (project, lane) = edits::add_lane(
+            &Project::new("Capture"),
+            owner,
+            target.clone(),
+            "Pan".into(),
+        )
+        .unwrap();
+        let project = edits::set_lane_mode(&project, owner, lane, AutomationMode::Latch).unwrap();
+        let mut pass = AutomationCapture::default();
+        for (offset, value) in [(10, 0.2), (30, 0.8)] {
+            let start = MAX_DOC_TICK + Tick(offset);
+            pass.open(&project, owner, target.clone(), false, 0.5);
+            pass.value(&project, owner, &target, start, value);
+            pass.end_segments(&project, start + Tick(10));
+            assert_eq!(
+                pass.preview_lane_ranges(owner, lane),
+                [(MAX_DOC_TICK, MAX_DOC_TICK)]
+            );
+        }
+        let applied = pass.apply(&project).unwrap();
+        let points = &edits::lanes(&applied, owner)
+            .unwrap()
+            .lane(&target)
+            .unwrap()
+            .points;
+        assert_eq!(points.as_slice().last().unwrap().tick, MAX_DOC_TICK);
     }
 }
