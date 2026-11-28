@@ -215,12 +215,17 @@ impl Engine {
         }
     }
 
-    /// Releases gate-mode voices of `pad`. One-shot voices ignore note offs.
+    /// Releases gate-mode pad voices of `pad`, those started by [`Engine::note_on`] or
+    /// [`Engine::note_on_with_id`]. One-shot voices ignore note offs. Region voices started by
+    /// [`Engine::trigger`] are not released here, even on the same pad: release them with
+    /// [`Engine::release_note`] or [`Engine::release_note_gates`].
     pub fn note_off(&mut self, pad: usize, settings: &[PadSettings]) {
         self.note_off_with_id(pad, settings, None, None);
     }
 
-    /// Releases gate-mode pad voices. When supplied, the note ID narrows the release.
+    /// Releases gate-mode pad voices of `pad`. When supplied, the note ID narrows the release.
+    /// Like [`Engine::note_off`], it skips region voices started by [`Engine::trigger`]; use
+    /// [`Engine::release_note`] or [`Engine::release_note_gates`] for those.
     pub fn note_off_with_id(
         &mut self,
         pad: usize,
