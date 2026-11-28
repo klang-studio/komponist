@@ -1065,6 +1065,7 @@ Export renders faster than realtime with the same engine code:
 | Engine | `komponist-engine/tests/{engine,compile,golden}` | render offline, assert exact samples; serial = parallel; `assert_no_alloc` around every `process` |
 | Devices | each device's `tests.rs` | parameter/state round trips, realtime allocation |
 | Hosting/IPC | plugin tests with the `test-plugins/` fixtures | real bridges with fixture plugins that crash, hang, add latency or use sidechains |
+| Untrusted input | proptests in ipc, plugin-api, hosting, audiofile; cargo-fuzz targets in `fuzz/` | control messages and streams, shared memory, layouts, plugin messages, VST3 state, audio files, peak cache: errors, never panics (`fuzz/README.md`) |
 | App | `komponist-app/tests/it/` | `App::headless(project)` with the null backend; `app.dispatch(Action::…)`; kittest UI flows |
 | UI pixels | `tests/snapshots/*.png` | kittest renders views; Linux (lavapipe) is the reference |
 
