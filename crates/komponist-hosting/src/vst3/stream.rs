@@ -26,7 +26,7 @@ use vst3::Steinberg::IBStream_::IStreamSeekMode_::{kIBSeekCur, kIBSeekEnd, kIBSe
 use vst3::Steinberg::{
     IBStream, IBStreamTrait, ISizeableStream, ISizeableStreamTrait, TUID, int32, int64, tresult,
 };
-use vst3::Steinberg::{kInvalidArgument, kResultOk};
+use vst3::Steinberg::{kInvalidArgument, kOutOfMemory, kResultOk};
 use vst3::{Class, ComWrapper};
 
 /// Magic at the start of a state blob.
@@ -36,12 +36,26 @@ pub(crate) const STATE_VERSION: u16 = 1;
 /// Bytes before the component state.
 pub(crate) const STATE_HEADER: usize = 40;
 
+/// Largest stream a plugin can write or size (1 GiB): a state travels in one control message,
+/// which is bounded the same way. Writes and `setStreamSize` past it fail with `kOutOfMemory`
+/// instead of aborting the bridge on a failed allocation.
+pub(crate) const MAX_STREAM_BYTES: usize = 1 << 30;
+
 /// A growable in-memory stream (like the SDK's `MemoryStream`). Used on one thread at a time, for
-/// the duration of one `getState` / `setState` call.
-#[derive(Debug, Default)]
+/// the duration of one `getState` / `setState` call. Every argument comes from the plugin and is
+/// checked: positions may lie anywhere in `0 ..= i64::MAX`, the data never grows past `limit`.
+#[derive(Debug)]
 pub(crate) struct MemoryStream {
     data: RefCell<Vec<u8>>,
     pos: Cell<usize>,
+    /// Largest length the data may grow to ([`MAX_STREAM_BYTES`]; smaller in tests).
+    limit: usize,
+}
+
+impl Default for MemoryStream {
+    fn default() -> MemoryStream {
+        MemoryStream::with_bytes(&[])
+    }
 }
 
 impl Class for MemoryStream {
@@ -54,7 +68,16 @@ impl MemoryStream {
         MemoryStream {
             data: RefCell::new(bytes.to_vec()),
             pos: Cell::new(0),
+            limit: MAX_STREAM_BYTES,
         }
+    }
+
+    /// The end of a write of `n` bytes at the current position, if the stream may grow to it.
+    fn end_of_write(&self, n: usize) -> Option<usize> {
+        self.pos
+            .get()
+            .checked_add(n)
+            .filter(|&end| end <= self.limit)
     }
 }
 
@@ -84,8 +107,13 @@ impl IBStreamTrait for MemoryStream {
         let data = self.data.borrow();
         let pos = self.pos.get().min(data.len());
         let take = (num_bytes.max(0) as usize).min(data.len() - pos);
-        // SAFETY: the plugin's buffer holds `num_bytes` ≥ `take` bytes.
-        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr().add(pos), buffer.cast(), take) };
+        // A NULL buffer is allowed with nothing to copy, but no pointer argument of
+        // `copy_nonoverlapping` may be NULL, not even for zero bytes.
+        if take > 0 {
+            // SAFETY: the plugin's buffer holds `num_bytes` ≥ `take` bytes and is not NULL
+            // (checked above, as `take > 0` needs `num_bytes > 0`).
+            unsafe { std::ptr::copy_nonoverlapping(data.as_ptr().add(pos), buffer.cast(), take) };
+        }
         self.pos.set(pos + take);
         if !num_read.is_null() {
             // SAFETY: valid out-pointer (checked for NULL).
@@ -104,16 +132,24 @@ impl IBStreamTrait for MemoryStream {
             return kInvalidArgument;
         }
         let n = num_bytes.max(0) as usize;
-        let mut data = self.data.borrow_mut();
-        let pos = self.pos.get();
-        if data.len() < pos + n {
-            data.resize(pos + n, 0);
-        }
-        // SAFETY: the plugin's buffer holds `n` bytes; `data` has room after the resize.
-        unsafe {
-            std::ptr::copy_nonoverlapping(buffer.cast::<u8>(), data.as_mut_ptr().add(pos), n)
+        // A position past the limit (a far seek) or a write growing the data past it is refused
+        // before anything is allocated or written.
+        let Some(end) = self.end_of_write(n) else {
+            return kOutOfMemory;
         };
-        self.pos.set(pos + n);
+        let pos = self.pos.get();
+        let mut data = self.data.borrow_mut();
+        if data.len() < end {
+            data.resize(end, 0);
+        }
+        if n > 0 {
+            // SAFETY: the plugin's buffer holds `n` bytes and is not NULL (checked above, as
+            // `n > 0`); `data` has room for `pos + n` bytes after the resize.
+            unsafe {
+                std::ptr::copy_nonoverlapping(buffer.cast::<u8>(), data.as_mut_ptr().add(pos), n)
+            };
+        }
+        self.pos.set(end);
         if !num_written.is_null() {
             // SAFETY: valid out-pointer (checked for NULL).
             unsafe { *num_written = n as int32 };
@@ -126,12 +162,13 @@ impl IBStreamTrait for MemoryStream {
         // The seek modes are `c_uint` constants outside Windows: compare as i64.
         let base = match i64::from(mode) {
             m if m == kIBSeekSet as i64 => 0,
-            m if m == kIBSeekCur as i64 => self.pos.get() as i64,
+            m if m == kIBSeekCur as i64 => i64::try_from(self.pos.get()).unwrap_or(i64::MAX),
             m if m == kIBSeekEnd as i64 => len,
             _ => return kInvalidArgument,
         };
         let new = base.saturating_add(pos).max(0);
-        self.pos.set(new as usize);
+        // Any non-negative position is kept (reads there give 0 bytes, writes check the limit).
+        self.pos.set(usize::try_from(new).unwrap_or(usize::MAX));
         if !result.is_null() {
             // SAFETY: valid out-pointer (checked for NULL).
             unsafe { *result = new };
@@ -144,7 +181,7 @@ impl IBStreamTrait for MemoryStream {
             return kInvalidArgument;
         }
         // SAFETY: valid out-pointer (checked for NULL).
-        unsafe { *pos = self.pos.get() as int64 };
+        unsafe { *pos = i64::try_from(self.pos.get()).unwrap_or(i64::MAX) };
         kResultOk
     }
 }
@@ -163,8 +200,13 @@ impl ISizeableStreamTrait for MemoryStream {
         if size < 0 {
             return kInvalidArgument;
         }
-        self.data.borrow_mut().resize(size as usize, 0);
-        kResultOk
+        match usize::try_from(size) {
+            Ok(size) if size <= self.limit => {
+                self.data.borrow_mut().resize(size, 0);
+                kResultOk
+            }
+            _ => kOutOfMemory,
+        }
     }
 }
 
@@ -220,6 +262,111 @@ pub(crate) fn decode_state(blob: &[u8]) -> Result<StateParts<'_>, String> {
         component,
         controller,
     })
+}
+
+/// Decodes `blob` as a state and checks the result: an error, or parts that make up the blob
+/// exactly. Panics otherwise. For the proptests and the `vst3_state` fuzz target (#230).
+pub(crate) fn check_state(blob: &[u8]) {
+    if let Ok(parts) = decode_state(blob) {
+        assert_eq!(
+            STATE_HEADER + parts.component.len() + parts.controller.len(),
+            blob.len()
+        );
+        // The same bytes again, but for the reserved flags, which readers ignore.
+        let again = encode_state(&parts.cid, parts.component, parts.controller);
+        assert_eq!(
+            (&again[..6], &again[8..]),
+            (&blob[..6], &blob[8..]),
+            "a decoded state encodes to the same bytes"
+        );
+    }
+}
+
+/// Stream limit of [`exercise`]: small, so a run never allocates much.
+const EXERCISE_LIMIT: usize = 64 * 1024;
+
+/// Makes the `IBStream` / `ISizeableStream` calls encoded in `ops` on a stream over `initial`, as a
+/// hostile plugin could make them (NULL buffers and out-pointers, negative counts, any seek), and
+/// checks after each call that the stream stays within its limit and reports consistent positions.
+/// Panics on a broken invariant. For the proptests and the `vst3_stream` fuzz target (#230).
+pub(crate) fn exercise(initial: &[u8], ops: &[u8]) {
+    let stream = MemoryStream {
+        limit: EXERCISE_LIMIT,
+        ..MemoryStream::with_bytes(&initial[..initial.len().min(EXERCISE_LIMIT)])
+    };
+    let mut ops = ops.iter().copied();
+    let mut buffer = [0u8; 1024];
+    let null = std::ptr::null_mut();
+    while let Some(op) = ops.next() {
+        let mut next = || ops.next().unwrap_or(0);
+        // A count in -1024 ..= 1024 (the buffer is only this long: a plugin that passes a
+        // shorter buffer than it claims is broken in a way no host can detect).
+        let count = i32::from(i16::from_le_bytes([next(), next()])) % 1025;
+        let before = stream.pos.get();
+        // SAFETY: valid buffers of at least `count` bytes, or NULL; valid or NULL out-pointers.
+        let result = unsafe {
+            let mut n = 0;
+            let mut pos = 0;
+            match op % 9 {
+                0 => stream.read(buffer.as_mut_ptr().cast(), count, &mut n),
+                1 => stream.read(null, count, null.cast()),
+                2 => stream.write(buffer.as_mut_ptr().cast(), count, &mut n),
+                3 => stream.write(null, count, null.cast()),
+                4 | 5 => {
+                    let to = i64::from_le_bytes(std::array::from_fn(|_| next()));
+                    let to = if op % 9 == 4 {
+                        to
+                    } else {
+                        to % (2 * EXERCISE_LIMIT as i64)
+                    };
+                    let mode = i32::from(next() % 4);
+                    let out = if next() & 1 == 0 {
+                        &raw mut pos
+                    } else {
+                        null.cast()
+                    };
+                    stream.seek(to, mode, out)
+                }
+                6 => stream.tell(if count & 1 == 0 {
+                    &raw mut pos
+                } else {
+                    null.cast()
+                }),
+                7 => {
+                    let size = i64::from_le_bytes(std::array::from_fn(|_| next()));
+                    let size = if count & 1 == 0 {
+                        size
+                    } else {
+                        size % (2 * EXERCISE_LIMIT as i64)
+                    };
+                    stream.setStreamSize(size)
+                }
+                _ => stream.getStreamSize(if count & 1 == 0 {
+                    &raw mut pos
+                } else {
+                    null.cast()
+                }),
+            }
+        };
+        let len = stream.data.borrow().len();
+        assert!(len <= EXERCISE_LIMIT, "the stream grew to {len} bytes");
+        match op % 9 {
+            0 if count > 0 => {
+                assert_eq!(result, kResultOk);
+                let from = before.min(len);
+                let expected = from + (count as usize).min(len - from);
+                assert_eq!(stream.pos.get(), expected, "a read ends after what it read");
+            }
+            1 | 3 if count > 0 => assert_eq!(result, kInvalidArgument),
+            2 if count > 0 => match before.checked_add(count as usize) {
+                Some(end) if end <= EXERCISE_LIMIT => {
+                    assert_eq!((result, stream.pos.get()), (kResultOk, end));
+                }
+                _ => assert_eq!((result, stream.pos.get()), (kOutOfMemory, before)),
+            },
+            _ => {}
+        }
+    }
 }
 
 #[cfg(test)]
@@ -329,5 +476,107 @@ mod tests {
         let mut huge = blob;
         huge[24..32].copy_from_slice(&u64::MAX.to_le_bytes());
         assert!(decode_state(&huge).is_err());
+    }
+
+    /// #230: a write after a seek to `i64::MAX` overflowed `pos + n` (wrapping in release, then a
+    /// copy past the buffer); a size or write past the limit tried to allocate it.
+    #[test]
+    fn far_seeks_and_huge_sizes_are_refused() {
+        let stream = MemoryStream::with_bytes(b"abc");
+        let mut byte = *b"x";
+        let mut pos = 0;
+        unsafe {
+            assert_eq!(
+                stream.seek(i64::MAX, crate::vst3::enum_i32(kIBSeekSet), &mut pos),
+                kResultOk
+            );
+            assert_eq!(pos, i64::MAX);
+            assert_eq!(
+                stream.write(byte.as_mut_ptr().cast(), 1, std::ptr::null_mut()),
+                kOutOfMemory
+            );
+            // Relative to a far position, too: saturates instead of overflowing.
+            assert_eq!(
+                stream.seek(i64::MAX, crate::vst3::enum_i32(kIBSeekCur), &mut pos),
+                kResultOk
+            );
+            assert_eq!(pos, i64::MAX);
+            let mut out = [0u8; 4];
+            let mut n = -1;
+            assert_eq!(stream.read(out.as_mut_ptr().cast(), 4, &mut n), kResultOk);
+            assert_eq!(n, 0);
+            assert_eq!(stream.setStreamSize(i64::MAX), kOutOfMemory);
+            assert_eq!(
+                stream.setStreamSize(MAX_STREAM_BYTES as i64 + 1),
+                kOutOfMemory
+            );
+            assert_eq!(stream.setStreamSize(-1), kInvalidArgument);
+            assert_eq!(
+                stream.seek(
+                    MAX_STREAM_BYTES as i64,
+                    crate::vst3::enum_i32(kIBSeekSet),
+                    &mut pos
+                ),
+                kResultOk
+            );
+            assert_eq!(
+                stream.write(byte.as_mut_ptr().cast(), 1, std::ptr::null_mut()),
+                kOutOfMemory
+            );
+        }
+        assert_eq!(stream.data.borrow().as_slice(), b"abc");
+    }
+
+    /// #230: a NULL buffer with a count of 0 (or less) reads and writes nothing; it used to reach
+    /// `copy_nonoverlapping` with a NULL pointer, which is undefined behaviour even for 0 bytes.
+    #[test]
+    fn null_buffers_without_bytes_are_fine() {
+        let stream = MemoryStream::with_bytes(b"abc");
+        let null = std::ptr::null_mut();
+        let mut n = -1;
+        unsafe {
+            assert_eq!(stream.read(null, 0, &mut n), kResultOk);
+            assert_eq!(n, 0);
+            assert_eq!(stream.read(null, -5, &mut n), kResultOk);
+            assert_eq!(stream.write(null, 0, &mut n), kResultOk);
+            assert_eq!(n, 0);
+            assert_eq!(stream.read(null, 1, &mut n), kInvalidArgument);
+            assert_eq!(stream.write(null, 1, &mut n), kInvalidArgument);
+        }
+        assert_eq!(stream.data.borrow().as_slice(), b"abc");
+        assert_eq!(stream.pos.get(), 0);
+    }
+
+    proptest::proptest! {
+        /// Whatever a plugin calls, the stream stays in bounds (the `vst3_stream` fuzz target).
+        #[test]
+        fn hostile_stream_calls_stay_in_bounds(
+            initial in proptest::collection::vec(proptest::num::u8::ANY, 0..64),
+            ops in proptest::collection::vec(proptest::num::u8::ANY, 0..512),
+        ) {
+            exercise(&initial, &ops);
+        }
+
+        /// Any blob decodes to an error or to parts that fill it exactly (the `vst3_state` target).
+        #[test]
+        fn any_state_blob_is_checked(blob in proptest::collection::vec(proptest::num::u8::ANY, 0..128)) {
+            check_state(&blob);
+        }
+
+        /// A valid blob with any lengths in its header: only the exact ones are accepted.
+        #[test]
+        fn state_lengths_must_add_up(
+            component in proptest::collection::vec(proptest::num::u8::ANY, 0..64),
+            controller in proptest::collection::vec(proptest::num::u8::ANY, 0..64),
+            claimed in (proptest::num::u64::ANY, proptest::num::u64::ANY),
+        ) {
+            let cid: TUID = b"kpTestSynth00001".map(|b| b as c_char);
+            let mut blob = encode_state(&cid, &component, &controller);
+            blob[24..32].copy_from_slice(&claimed.0.to_le_bytes());
+            blob[32..40].copy_from_slice(&claimed.1.to_le_bytes());
+            let exact = claimed == (component.len() as u64, controller.len() as u64);
+            proptest::prop_assert_eq!(decode_state(&blob).is_ok(), exact);
+            check_state(&blob);
+        }
     }
 }

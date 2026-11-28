@@ -63,6 +63,8 @@ windows-sys = { workspace = true, features = [
 assert_no_alloc.workspace = true
 # Klopfer's state (JSON) in the VST3 installed-plugin tests.
 serde_json.workspace = true
+# Hostile-input properties of the VST3 state stream and blob (#230).
+proptest.workspace = true
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # Parent windows for the GUI tests (run under Xvfb only).
