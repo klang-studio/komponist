@@ -495,6 +495,7 @@ mod tests {
         }
         std::thread::spawn(|| {
             harden_process();
+            // SAFETY: reads the process's error mode; no arguments.
             let mode = unsafe { GetErrorMode() };
             assert_eq!(
                 mode & (SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX),
@@ -503,8 +504,12 @@ mod tests {
             let mut name: *mut u16 = std::ptr::null_mut();
             // SAFETY: the pseudo handle of this thread; the string is freed with LocalFree.
             assert!(unsafe { GetThreadDescription(GetCurrentThread(), &mut name) } >= 0);
+            // SAFETY: `name` is the NUL-terminated string the call returned; reading stops at
+            // the NUL.
             let len = (0..).take_while(|&i| unsafe { *name.add(i) } != 0).count();
+            // SAFETY: `len` UTF-16 units before the NUL, all readable (counted above).
             let text = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(name, len) });
+            // SAFETY: the string `GetThreadDescription` allocated, freed once, not used after.
             unsafe { windows_sys::Win32::Foundation::LocalFree(name.cast()) };
             assert_eq!(text, "komponist-bridge");
         })

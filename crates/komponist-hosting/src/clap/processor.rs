@@ -1,16 +1,11 @@
 //! The audio-thread half of a CLAP instance ([`HostedProcessor`]).
 //!
-//! komponist always hands over stereo in and stereo out. The plugin's audio ports are adapted:
-//!
-//! - **Input:** the main input port (the first port flagged main, else port 0) gets the stereo
-//!   input; a mono port gets `(L + R) / 2`, a port with more than two channels gets L and R in its
-//!   first two channels and silence in the rest. The sidechain port (the first other input port
-//!   with channels, #6) gets the block's sidechain the same way, or silence without one. A plugin
-//!   may request the main-input fallback for an unconnected sidechain. Every further input port
-//!   is silent.
-//! - **Output:** the main output port is read back; a mono port goes to both channels, a port with
-//!   more channels contributes its first two. Other output ports are rendered and discarded. A
-//!   plugin without output ports passes the input through.
+//! komponist always hands over stereo in and stereo out; the plugin's audio ports are adapted by
+//! the [`StereoAdapter`] it shares with the VST3 layer (`crate::adapter`). The main port of a
+//! direction is the first port flagged main, else port 0; the sidechain port is the first other
+//! input port with channels (#6; CLAP has no sidechain flag). A plugin may request the main-input
+//! fallback for an unconnected sidechain. Held notes ([`HeldNotes`]) turn an all-notes-off into
+//! note-offs; MIDI messages go to the plugin as they are.
 //!
 //! Buffers, port descriptors and the event list are allocated in [`ClapProcessor::new`]
 //! (activation, main thread); [`HostedProcessor::process`] only copies and converts.
@@ -28,63 +23,46 @@ use komponist_ipc::shm::{
 };
 use komponist_ipc::{WireEventKind, WireTransport};
 
-use super::events::{self, InEvent, InputEventList, NO_NOTE_ID, WireSink};
+use super::events::{self, InEvent, InputEventList, WireSink};
 use super::host::{AudioThreadScope, KpHost};
 use super::signal_taps::SignalTaps;
+use crate::adapter::{ALL_NOTES_OFF_ROOM, AudioLayout, HeldNotes, Note, StereoAdapter};
 use crate::plugin::{HostedProcessor, HostingError, ProcessBlock, ProcessStatus};
 
-/// Room in the event list for an all-notes-off expanded to one note-off per held note.
-const ALL_NOTES_OFF_ROOM: usize = 16 * 128;
-
-/// Channel counts of one direction's audio ports and which one is the main port.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct PortLayout {
-    pub(crate) channels: Vec<u32>,
-    pub(crate) main: Option<usize>,
-    /// Inputs only: the sidechain port, the first port besides the main one with at least one
-    /// channel (#6). CLAP has no sidechain flag, so the non-main input is taken.
-    pub(crate) sidechain: Option<usize>,
-    pub(crate) sidechain_from_main: bool,
+/// Reads the audio ports of one direction of `plugin` (main thread, inactive): channel counts, the
+/// main port and, for inputs, the sidechain port. `sidechain_from_main` is the caller's.
+pub(crate) fn port_layout(
+    ext: Option<PluginAudioPorts>,
+    plugin: &PluginMainThreadHandle,
+    is_input: bool,
+) -> AudioLayout {
+    let Some(ext) = ext else {
+        return AudioLayout::default();
+    };
+    let mut layout = AudioLayout::default();
+    let mut buffer = AudioPortInfoBuffer::new();
+    for index in 0..ext.count(plugin, is_input) {
+        let Some(info) = ext.get(plugin, index, is_input, &mut buffer) else {
+            continue;
+        };
+        if layout.main.is_none() && info.flags.contains(AudioPortFlags::IS_MAIN) {
+            layout.main = Some(layout.channels.len());
+        }
+        layout.channels.push(info.channel_count);
+    }
+    if layout.main.is_none() && !layout.channels.is_empty() {
+        layout.main = Some(0);
+    }
+    if is_input {
+        layout.sidechain = sidechain_port(&layout);
+    }
+    layout
 }
 
-impl PortLayout {
-    /// Reads the audio ports of `plugin` (main thread, inactive).
-    pub(crate) fn query(
-        ext: Option<PluginAudioPorts>,
-        plugin: &PluginMainThreadHandle,
-        is_input: bool,
-    ) -> PortLayout {
-        let Some(ext) = ext else {
-            return PortLayout::default();
-        };
-        let mut layout = PortLayout::default();
-        let mut buffer = AudioPortInfoBuffer::new();
-        for index in 0..ext.count(plugin, is_input) {
-            let Some(info) = ext.get(plugin, index, is_input, &mut buffer) else {
-                continue;
-            };
-            if layout.main.is_none() && info.flags.contains(AudioPortFlags::IS_MAIN) {
-                layout.main = Some(layout.channels.len());
-            }
-            layout.channels.push(info.channel_count);
-        }
-        if layout.main.is_none() && !layout.channels.is_empty() {
-            layout.main = Some(0);
-        }
-        if is_input {
-            layout.sidechain = layout.sidechain_port();
-        }
-        layout
-    }
-
-    /// The first port besides the main one with at least one channel.
-    fn sidechain_port(&self) -> Option<usize> {
-        (0..self.channels.len()).find(|&p| Some(p) != self.main && self.channels[p] > 0)
-    }
-
-    fn total_channels(&self) -> usize {
-        self.channels.iter().map(|&c| c as usize).sum()
-    }
+/// The sidechain port: the first port besides the main one with at least one channel (#6). CLAP
+/// has no sidechain flag, so the non-main input is taken.
+fn sidechain_port(layout: &AudioLayout) -> Option<usize> {
+    (0..layout.channels.len()).find(|&p| Some(p) != layout.main && layout.channels[p] > 0)
 }
 
 /// How notes reach the plugin.
@@ -124,143 +102,20 @@ impl NoteTarget {
     }
 }
 
-/// Scratch audio for all ports of one direction, `stride` = max frames per channel.
+/// The clack port descriptors and the stereo-adapted scratch audio of one direction.
 struct PortBuffers {
     ports: AudioPorts,
-    channels: Vec<u32>,
-    main: Option<usize>,
-    sidechain: Option<usize>,
-    sidechain_from_main: bool,
-    /// Per port: the index of its first channel in `data` (in channels).
-    firsts: Vec<usize>,
-    stride: usize,
-    data: Vec<f32>,
+    audio: StereoAdapter,
 }
 
 impl PortBuffers {
-    fn new(layout: &PortLayout, max_frames: usize) -> PortBuffers {
-        let total = layout.total_channels();
-        let firsts = layout
-            .channels
-            .iter()
-            .scan(0usize, |first, &count| {
-                let this = *first;
-                *first += count as usize;
-                Some(this)
-            })
-            .collect();
+    fn new(layout: &AudioLayout, max_frames: usize) -> PortBuffers {
+        let total = layout.channels.iter().map(|&c| c as usize).sum();
         PortBuffers {
             ports: AudioPorts::with_capacity(total, layout.channels.len()),
-            channels: layout.channels.clone(),
-            main: layout.main,
-            sidechain: layout.sidechain,
-            sidechain_from_main: layout.sidechain_from_main
-                && layout.main.is_some_and(|main| layout.channels[main] > 0),
-            firsts,
-            stride: max_frames,
-            data: vec![0.0; total * max_frames],
+            audio: StereoAdapter::new(layout, max_frames),
         }
     }
-
-    fn main_channels(&self) -> usize {
-        self.main.map_or(0, |m| self.channels[m] as usize)
-    }
-
-    /// Channel `ch` of port `port`, `frames` long.
-    fn port_channel(&mut self, port: usize, ch: usize, frames: usize) -> &mut [f32] {
-        let start = (self.firsts[port] + ch) * self.stride;
-        &mut self.data[start..start + frames]
-    }
-
-    /// Channel `ch` of the main port, `frames` long.
-    fn main_channel(&mut self, ch: usize, frames: usize) -> &mut [f32] {
-        let main = self.main.expect("a main port");
-        self.port_channel(main, ch, frames)
-    }
-
-    /// Writes the stereo `src` into `port`, adapted to its channel count: a mono port gets the
-    /// mid signal, a port with more channels L and R and (already) silence in the rest.
-    fn write_stereo(&mut self, port: usize, src: [&[f32]; 2], frames: usize) {
-        match self.channels[port] {
-            0 => {}
-            1 => {
-                let mono = self.port_channel(port, 0, frames);
-                for ((m, l), r) in mono.iter_mut().zip(src[0]).zip(src[1]) {
-                    *m = 0.5 * (l + r);
-                }
-            }
-            _ => {
-                for (ch, samples) in src.iter().enumerate() {
-                    self.port_channel(port, ch, frames)
-                        .copy_from_slice(&samples[..frames]);
-                }
-            }
-        }
-    }
-
-    /// Zeroes the first `frames` of every channel.
-    fn clear(&mut self, frames: usize) {
-        for channel in self.data.chunks_exact_mut(self.stride) {
-            channel[..frames].fill(0.0);
-        }
-    }
-
-    /// Input side: silences every port, then writes the stereo `input` into the main port and the
-    /// sidechain into its port, adapted to their channel counts. If disconnected, only a plugin
-    /// that opts into the main-input fallback receives the main signal on that port.
-    fn fill_from_stereo(
-        &mut self,
-        input: [&[f32]; 2],
-        sidechain: Option<[&[f32]; 2]>,
-        frames: usize,
-    ) {
-        self.clear(frames);
-        if let Some(main) = self.main {
-            self.write_stereo(main, input, frames);
-        }
-        let sidechain = sidechain.or(self.sidechain_from_main.then_some(input));
-        if let (Some(port), Some(sidechain)) = (self.sidechain, sidechain) {
-            self.write_stereo(port, sidechain, frames);
-        }
-    }
-
-    /// Output side: copies the main port into the stereo `output` (mono to both channels).
-    /// Without a main port the `input` passes through.
-    fn read_to_stereo(&mut self, input: [&[f32]; 2], output: &mut [&mut [f32]; 2], frames: usize) {
-        match self.main_channels() {
-            0 => {
-                for (dst, src) in output.iter_mut().zip(input) {
-                    dst[..frames].copy_from_slice(&src[..frames]);
-                }
-            }
-            1 => {
-                let mono = self.main_channel(0, frames);
-                output[0][..frames].copy_from_slice(mono);
-                output[1][..frames].copy_from_slice(mono);
-            }
-            _ => {
-                for (ch, dst) in output.iter_mut().enumerate() {
-                    dst[..frames].copy_from_slice(self.main_channel(ch, frames));
-                }
-            }
-        }
-    }
-}
-
-/// Splits `data` into per-port channel lists of `frames` samples; the shape the clack buffer
-/// builders want. No allocation.
-fn split_ports<'a>(
-    data: &'a mut [f32],
-    channels: &'a [u32],
-    stride: usize,
-    frames: usize,
-) -> impl ExactSizeIterator<Item = impl Iterator<Item = &'a mut [f32]>> {
-    let mut rest = data;
-    channels.iter().map(move |&count| {
-        let (port, tail) = std::mem::take(&mut rest).split_at_mut(count as usize * stride);
-        rest = tail;
-        port.chunks_exact_mut(stride).map(move |c| &mut c[..frames])
-    })
 }
 
 /// The audio-thread half of an active CLAP instance.
@@ -271,8 +126,7 @@ pub(crate) struct ClapProcessor {
     notes: NoteTarget,
     note_output: bool,
     events: InputEventList,
-    /// Held notes: bit `c` of `held[key]` = channel `c`.
-    held: [u16; 128],
+    held: HeldNotes,
     max_frames: u32,
     signal_taps: Option<SignalTaps>,
 }
@@ -281,8 +135,8 @@ impl ClapProcessor {
     /// Main thread, at activation: allocates everything `process` needs.
     pub(crate) fn new(
         audio: StoppedPluginAudioProcessor<KpHost>,
-        inputs: &PortLayout,
-        outputs: &PortLayout,
+        inputs: &AudioLayout,
+        outputs: &AudioLayout,
         notes: NoteTarget,
         note_output: bool,
         max_frames: u32,
@@ -294,7 +148,7 @@ impl ClapProcessor {
             notes,
             note_output,
             events: InputEventList::with_capacity(INPUT_EVENT_CAPACITY + ALL_NOTES_OFF_ROOM),
-            held: [0; 128],
+            held: HeldNotes::new(),
             max_frames,
             signal_taps: None,
         }
@@ -304,36 +158,26 @@ impl ClapProcessor {
         self.signal_taps = taps;
     }
 
-    /// A note on (`velocity > 0`) or off. Channels ≥ 16 and keys ≥ 128 are dropped: the wire
-    /// format does not range-check them, and they index `held`.
-    fn note_event(&mut self, time: u32, channel: u8, key: u8, velocity: u8, note_id: u32) {
-        if !valid_note(channel, key) {
-            return;
-        }
-        let on = velocity > 0;
-        let bit = 1u16 << channel;
-        if on {
-            self.held[key as usize] |= bit;
-        } else {
-            self.held[key as usize] &= !bit;
-        }
+    /// A note on or off that [`HeldNotes`] recorded, as an event on the note port.
+    fn push_note(&mut self, time: u32, note: Note) {
+        let Note {
+            channel,
+            key,
+            velocity,
+            note_id,
+        } = note;
         let event = match self.notes {
             NoteTarget::None => return,
             NoteTarget::Clap(port) => {
-                let note_id = if note_id == NO_NOTE_ID {
-                    -1
-                } else {
-                    (note_id & i32::MAX as u32) as i32
-                };
                 let pckn = Pckn::from_raw(port as i16, i16::from(channel), i16::from(key), note_id);
-                if on {
+                if note.is_on() {
                     InEvent::NoteOn(NoteOnEvent::new(time, pckn, f64::from(velocity) / 127.0))
                 } else {
                     InEvent::NoteOff(NoteOffEvent::new(time, pckn, 0.0))
                 }
             }
             NoteTarget::Midi(port) => {
-                let status = if on { 0x90 } else { 0x80 } | channel;
+                let status = if note.is_on() { 0x90 } else { 0x80 } | channel;
                 InEvent::Midi(MidiEvent::new(time, port, [status, key, velocity]))
             }
         };
@@ -352,20 +196,23 @@ impl ClapProcessor {
                     key,
                     velocity,
                     note_id,
-                }) => self.note_event(time, channel, key, velocity, note_id),
+                }) => {
+                    if let Some(note) = self.held.on(channel, key, velocity, note_id) {
+                        self.push_note(time, note);
+                    }
+                }
                 Some(WireEventKind::NoteOff {
                     channel,
                     key,
                     note_id,
-                }) => self.note_event(time, channel, key, 0, note_id),
+                }) => {
+                    if let Some(note) = self.held.off(channel, key, note_id) {
+                        self.push_note(time, note);
+                    }
+                }
                 Some(WireEventKind::AllNotesOff) => {
-                    for key in 0..128u8 {
-                        let mut channels = self.held[key as usize];
-                        while channels != 0 {
-                            let channel = channels.trailing_zeros() as u8;
-                            channels &= channels - 1;
-                            self.note_event(time, channel, key, 0, NO_NOTE_ID);
-                        }
+                    for note in self.held.release_all() {
+                        self.push_note(time, note);
                     }
                 }
                 Some(WireEventKind::Midi(data)) => {
@@ -384,11 +231,6 @@ impl ClapProcessor {
             }
         }
     }
-}
-
-/// Whether `channel` and `key` are a MIDI channel (0 ..= 15) and key (0 ..= 127).
-fn valid_note(channel: u8, key: u8) -> bool {
-    channel < 16 && key < 128
 }
 
 /// The CLAP transport for `t`; `None` without a tempo (no transport known).
@@ -464,31 +306,33 @@ impl HostedProcessor for ClapProcessor {
 
         self.convert_events(block);
         self.inputs
+            .audio
             .fill_from_stereo(block.input, block.sidechain, frames);
-        self.outputs.clear(frames);
+        self.outputs.audio.clear(frames);
         let transport = transport_event(block.transport);
 
         let result = {
             let inputs = &mut self.inputs;
             let outputs = &mut self.outputs;
-            let in_buffers = inputs.ports.with_input_buffers(
-                split_ports(&mut inputs.data, &inputs.channels, inputs.stride, frames).map(
-                    |channels| AudioPortBuffer {
+            let in_buffers = inputs
+                .ports
+                .with_input_buffers(inputs.audio.ports_mut(frames).map(|channels| {
+                    AudioPortBuffer {
                         latency: 0,
                         channels: AudioPortBufferType::f32_input_only(
                             channels.map(InputChannel::variable),
                         ),
-                    },
-                ),
-            );
-            let mut out_buffers = outputs.ports.with_output_buffers(
-                split_ports(&mut outputs.data, &outputs.channels, outputs.stride, frames).map(
-                    |channels| AudioPortBuffer {
-                        latency: 0,
-                        channels: AudioPortBufferType::f32_output_only(channels),
-                    },
-                ),
-            );
+                    }
+                }));
+            let mut out_buffers =
+                outputs
+                    .ports
+                    .with_output_buffers(outputs.audio.ports_mut(frames).map(|channels| {
+                        AudioPortBuffer {
+                            latency: 0,
+                            channels: AudioPortBufferType::f32_output_only(channels),
+                        }
+                    }));
             let in_buffers = if in_buffers.frames_count().is_none()
                 && out_buffers.frames_count().is_none()
             {
@@ -521,8 +365,10 @@ impl HostedProcessor for ClapProcessor {
 
         match result {
             Ok(status) => {
+                // CLAP has no per-channel silence flags to honour.
                 self.outputs
-                    .read_to_stereo(block.input, &mut block.output, frames);
+                    .audio
+                    .read_to_stereo(block.input, &mut block.output, frames, 0);
                 match status {
                     clack_host::process::ProcessStatus::Sleep => ProcessStatus::Sleep,
                     _ => ProcessStatus::Continue,
@@ -553,7 +399,8 @@ impl HostedProcessor for ClapProcessor {
     fn reset(&mut self) {
         let _audio = AudioThreadScope::enter();
         self.audio.reset();
-        self.held = [0; 128];
+        // CLAP's reset clears the plugin's voices itself: no note-offs.
+        self.held.clear();
     }
 }
 
@@ -572,31 +419,13 @@ impl Drop for ClapProcessor {
 mod tests {
     use super::*;
 
-    #[test]
-    fn split_ports_shapes_channels() {
-        let mut data: Vec<f32> = (0..12).map(|i| i as f32).collect();
-        let channels = [1u32, 2, 0, 1];
-        let shapes: Vec<Vec<Vec<f32>>> = split_ports(&mut data, &channels, 3, 2)
-            .map(|port| port.map(|c| c.to_vec()).collect())
-            .collect();
-        assert_eq!(
-            shapes,
-            vec![
-                vec![vec![0.0, 1.0]],
-                vec![vec![3.0, 4.0], vec![6.0, 7.0]],
-                vec![],
-                vec![vec![9.0, 10.0]],
-            ]
-        );
-    }
-
-    fn layout(channels: &[u32], main: Option<usize>) -> PortLayout {
-        let mut layout = PortLayout {
+    fn layout(channels: &[u32], main: Option<usize>) -> AudioLayout {
+        let mut layout = AudioLayout {
             channels: channels.to_vec(),
             main,
-            ..PortLayout::default()
+            ..AudioLayout::default()
         };
-        layout.sidechain = layout.sidechain_port();
+        layout.sidechain = sidechain_port(&layout);
         layout
     }
 
@@ -607,86 +436,6 @@ mod tests {
         assert_eq!(layout(&[2, 1], Some(1)).sidechain, Some(0));
         assert_eq!(layout(&[2, 0, 1], Some(0)).sidechain, Some(2));
         assert_eq!(layout(&[], None).sidechain, None);
-    }
-
-    #[test]
-    fn the_sidechain_goes_into_its_port_or_silence() {
-        let left = [1.0, 2.0, 3.0];
-        let right = [3.0, 4.0, 5.0];
-        let sc = [[0.5f32; 3], [-0.5f32; 3]];
-        // Main stereo, a stereo sidechain port, a mono third port.
-        let mut ports = PortBuffers::new(&layout(&[2, 2, 1], Some(0)), 4);
-        ports.data.fill(9.0);
-        ports.fill_from_stereo([&left, &right], Some([&sc[0], &sc[1]]), 3);
-        assert_eq!(ports.main_channel(1, 3), &right);
-        assert_eq!(ports.port_channel(1, 0, 3), &sc[0]);
-        assert_eq!(ports.port_channel(1, 1, 3), &sc[1]);
-        assert_eq!(ports.port_channel(2, 0, 3), &[0.0; 3]);
-        // No sidechain this block: the port is silent again.
-        ports.fill_from_stereo([&left, &right], None, 3);
-        assert_eq!(ports.port_channel(1, 0, 3), &[0.0; 3]);
-        assert_eq!(ports.port_channel(1, 1, 3), &[0.0; 3]);
-        // A mono sidechain port gets the mid signal.
-        let mut ports = PortBuffers::new(&layout(&[2, 1], Some(0)), 3);
-        ports.fill_from_stereo([&left, &right], Some([&left, &right]), 3);
-        assert_eq!(ports.port_channel(1, 0, 3), &[2.0, 3.0, 4.0]);
-    }
-
-    #[test]
-    fn opted_in_sidechain_uses_main_only_until_a_source_is_connected() {
-        let input = [[1.0, 2.0], [3.0, 4.0]];
-        let mut layout = layout(&[2, 2], Some(0));
-        layout.sidechain_from_main = true;
-        let mut ports = PortBuffers::new(&layout, 2);
-
-        ports.fill_from_stereo([&input[0], &input[1]], None, 2);
-        assert_eq!(ports.port_channel(1, 0, 2), &input[0]);
-        assert_eq!(ports.port_channel(1, 1, 2), &input[1]);
-
-        let silence = [0.0; 2];
-        ports.fill_from_stereo([&input[0], &input[1]], Some([&silence, &silence]), 2);
-        assert_eq!(ports.port_channel(1, 0, 2), &silence);
-        assert_eq!(ports.port_channel(1, 1, 2), &silence);
-    }
-
-    #[test]
-    fn stereo_input_adapts_to_the_main_port() {
-        let left = [1.0, 2.0, 3.0];
-        let right = [3.0, 4.0, 5.0];
-        // Sidechain (2 ch) first, mono main second: main gets the mid signal, the rest is silent.
-        let mut ports = PortBuffers::new(&layout(&[2, 1], Some(1)), 4);
-        ports.data.fill(9.0);
-        ports.fill_from_stereo([&left, &right], None, 3);
-        assert_eq!(ports.main_channel(0, 3), &[2.0, 3.0, 4.0]);
-        assert_eq!(&ports.data[0..3], &[0.0; 3]);
-        assert_eq!(&ports.data[4..7], &[0.0; 3]);
-        // Four channels: L and R, then silence.
-        let mut ports = PortBuffers::new(&layout(&[4], Some(0)), 3);
-        ports.fill_from_stereo([&left, &right], None, 3);
-        assert_eq!(ports.main_channel(0, 3), &left);
-        assert_eq!(ports.main_channel(1, 3), &right);
-        assert_eq!(ports.main_channel(3, 3), &[0.0; 3]);
-    }
-
-    #[test]
-    fn main_output_adapts_to_stereo() {
-        let input = [[7.0f32; 2], [8.0f32; 2]];
-        let input = [&input[0][..], &input[1][..]];
-        let (mut l, mut r) = ([0.0f32; 2], [0.0f32; 2]);
-        let mut ports = PortBuffers::new(&layout(&[1], Some(0)), 2);
-        ports.main_channel(0, 2).copy_from_slice(&[0.5, -0.5]);
-        ports.read_to_stereo(input, &mut [&mut l, &mut r], 2);
-        assert_eq!((l, r), ([0.5, -0.5], [0.5, -0.5]));
-        // No output port: the input passes through.
-        let mut ports = PortBuffers::new(&PortLayout::default(), 2);
-        ports.read_to_stereo(input, &mut [&mut l, &mut r], 2);
-        assert_eq!((l, r), ([7.0; 2], [8.0; 2]));
-    }
-
-    #[test]
-    fn out_of_range_notes_are_rejected() {
-        assert!(valid_note(0, 0) && valid_note(15, 127));
-        assert!(!valid_note(16, 60) && !valid_note(0, 128) && !valid_note(255, 255));
     }
 
     #[test]

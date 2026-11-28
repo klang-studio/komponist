@@ -22,20 +22,12 @@ klang-dsp.workspace = true
 rtrb.workspace = true
 hound.workspace = true
 tempfile.workspace = true
-# Realtime set-up of the workers (SCHED_FIFO, time-constraint policy, audio workgroup) and the
-# macOS os_sync wait with its timer-leeway compensation (#45).
+# Realtime set-up of the workers (SCHED_FIFO, time-constraint policy, audio workgroup) and their
+# wait/wake (`os_sync`: futex, os_sync_wait_on_address, WaitOnAddress; #45, #243).
 komponist-rt.workspace = true
 # The export's render calls run inside `assert_no_alloc` (it reports only in binaries and tests that
 # install `assert_no_alloc::AllocDisabler`; a no-op in release builds).
 assert_no_alloc.workspace = true
-
-[target.'cfg(target_os = "linux")'.dependencies]
-# Futex wait/wake of the worker pool (WP-65); already a workspace dependency (komponist-ipc).
-rustix.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-# WaitOnAddress / WakeByAddress* of the worker pool (W3).
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
 
 [dev-dependencies]
 komponist-session.workspace = true

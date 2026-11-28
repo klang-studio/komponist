@@ -2997,9 +2997,7 @@ dependencies = [
  "komponist-session",
  "komponist-stretch",
  "rtrb",
- "rustix 1.1.6",
  "tempfile",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3179,6 +3177,7 @@ version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
  "libc",
+ "rustix 1.1.6",
  "windows-sys 0.61.2",
 ]
 

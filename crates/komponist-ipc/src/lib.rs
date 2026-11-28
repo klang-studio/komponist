@@ -28,8 +28,8 @@
 //! `Channel::send_region` / `Channel::recv_region` (and `send_handle` / `recv_handle`) replace
 //! `send_fd` / `recv_fd`, [`control::socket_pair`] returns the bridge's end as an `OwnedHandle`,
 //! `Channel::from_handle` replaces `from_fd`, and `AsHandle` replaces `AsFd` on [`Channel`] and
-//! [`ProcessWatcher`]. [`signal::wait_while`] and [`signal::wake`] work only within one process
-//! there; the block handshake does not use them.
+//! [`ProcessWatcher`]. The block handshake waits on events there instead of an address wait
+//! (`komponist_rt::os_sync` has no cross-process scope on Windows).
 //!
 //! This crate links no plugin format and no audio backend.
 
