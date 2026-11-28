@@ -289,7 +289,7 @@ fn checkpoint_and_relocation_keep_capture_running_and_a_failed_move_keeps_old_pa
     assert!(checkpoint[0].path.starts_with(&_dir.0));
     let destination = _dir.0.join("Takes");
     let moved = session.relocate(&destination).unwrap();
-    assert!(moved[0].path.starts_with(&destination));
+    assert!(moved[&checkpoint[0].path].starts_with(&destination));
     assert!(!checkpoint[0].path.exists());
     feed(&mut rig, &[0.25; 128], 0, 0, false);
     rig.send(Command::Stop);

@@ -156,7 +156,7 @@ impl App {
         self.advance_audio_take(None);
     }
 
-    fn advance_audio_take(&mut self, deadline: Option<Instant>) {
+    fn advance_audio_take(&mut self, deadline: Option<Instant>) -> bool {
         let names = MidiTakeNames(self.lang);
         if deadline.is_none() {
             self.recording.audio.refresh_view(
@@ -172,8 +172,11 @@ impl App {
             deadline,
         );
         match progress {
-            TakeProgress::Pending => {}
-            TakeProgress::Cancelled => self.sync_project(),
+            TakeProgress::Pending => true,
+            TakeProgress::Cancelled => {
+                self.sync_project();
+                false
+            }
             TakeProgress::Failed {
                 error,
                 midi,
@@ -195,6 +198,7 @@ impl App {
                 }
                 self.set_status(self.lang.audio_record_failed(error), StatusKind::Error);
                 self.session.engine_mut().send(Command::StopRecording);
+                false
             }
             TakeProgress::Ready(take) => {
                 let label = take.midi.as_ref().map_or_else(
@@ -210,6 +214,7 @@ impl App {
                     take.midi.as_slice(),
                     &take.takes,
                 );
+                let committed = applied.is_some();
                 if let Some(applied) = applied {
                     if let Some(first) = applied.clips.first() {
                         self.dispatch(Action::Ui(UiAction::OpenClip(*first)));
@@ -230,6 +235,7 @@ impl App {
                 if let Some(error) = take.move_failed {
                     self.set_status(self.lang.audio_record_move_failed(error), StatusKind::Error);
                 }
+                committed
             }
         }
     }
@@ -278,7 +284,9 @@ impl App {
     fn await_finalizing_audio_take(&mut self) -> bool {
         let deadline = Instant::now() + TAKE_FINISH_TIMEOUT;
         while self.recording.audio.is_active() && Instant::now() < deadline {
-            self.advance_audio_take(Some(deadline));
+            if !self.advance_audio_take(Some(deadline)) {
+                return false;
+            }
         }
         if self.recording.audio.is_active() {
             self.set_status(self.lang.audio_record_finalizing(), StatusKind::Info);
@@ -1095,6 +1103,20 @@ mod tests {
         assert_eq!(app.project().track(audio).unwrap().clips.len(), 1);
         drop(app);
     }
+    #[test]
+    fn save_staging_does_not_retry_after_a_failed_writer() {
+        let (root, mut app, track) = rig();
+        begin(&mut app, track);
+        app.engine_mut().send(Command::AbortAudioRecording);
+        assert!(app.engine_mut().run_held(256, &[], 0));
+        // A closed writer causes the first staging attempt to wait for the final result.
+        app.recording.audio.stop();
+        assert!(app.stage_recordings_for_save(&root).is_err());
+        assert!(!app.recording.audio.is_active());
+        assert_eq!(app.ui.status.as_ref().unwrap().kind, StatusKind::Error);
+        assert!(app.project().track(track).unwrap().clips.is_empty());
+    }
+
     #[test]
     fn save_drains_an_interrupted_mixed_take_before_staging() {
         use komponist_engine::{EVENT_CAPACITY, MAX_TRACKS, MidiInEvent, MidiPort, TransportState};

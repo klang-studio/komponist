@@ -340,9 +340,11 @@ impl Drop for WriterOutcome {
 }
 
 type Checkpoint = Result<Vec<RecordedTake>, RecordingError>;
+type Relocation = Result<BTreeMap<PathBuf, PathBuf>, RecordingError>;
+
 enum Control {
     Checkpoint(mpsc::SyncSender<Checkpoint>),
-    Relocate(PathBuf, mpsc::SyncSender<Checkpoint>),
+    Relocate(PathBuf, mpsc::SyncSender<Relocation>),
 }
 impl RecordingSession {
     /// Non-RT. Flushes all WAV headers and returns a consistent, saveable prefix of each take.
@@ -361,8 +363,11 @@ impl RecordingSession {
     }
     /// Non-RT. Closes file handles, transactionally stages hard links on the same filesystem, and reopens
     /// append. A failed move restores old paths and capture continues; cross-device moves are an
-    /// explicit error and can be copied after stopping. No files are silently overwritten.
-    pub fn relocate(&self, directory: &std::path::Path) -> Checkpoint {
+    /// explicit error and can be copied after stopping. Returns the exact old-to-new path mapping.
+    pub fn relocate(
+        &self,
+        directory: &std::path::Path,
+    ) -> Result<BTreeMap<PathBuf, PathBuf>, RecordingError> {
         let (tx, rx) = mpsc::sync_channel(1);
         self.request(Control::Relocate(directory.to_path_buf(), tx))?;
         rx.recv().map_err(|_| RecordingError::WriterStopped)?
@@ -614,7 +619,7 @@ fn snapshot_outputs(all: &[BTreeMap<u32, Output>], config: &RecordingConfig) -> 
 fn relocate_outputs(
     all: &mut [BTreeMap<u32, Output>],
     directory: &std::path::Path,
-) -> Result<(), RecordingError> {
+) -> Result<BTreeMap<PathBuf, PathBuf>, RecordingError> {
     relocate_outputs_with(all, directory, |path| hound::WavWriter::append(path))
 }
 
@@ -625,7 +630,7 @@ fn relocate_outputs_with(
     all: &mut [BTreeMap<u32, Output>],
     directory: &std::path::Path,
     mut open: impl FnMut(&std::path::Path) -> Result<Writer, hound::Error>,
-) -> Result<(), RecordingError> {
+) -> Result<BTreeMap<PathBuf, PathBuf>, RecordingError> {
     flush_all(all)?;
     std::fs::create_dir_all(directory).map_err(|e| RecordingError::Io(e.to_string()))?;
     let mut outputs: Vec<_> = all.iter_mut().flat_map(|p| p.values_mut()).collect();
@@ -640,7 +645,7 @@ fn relocate_outputs_with(
         })
         .collect::<Result<_, RecordingError>>()?;
     if paths.iter().all(|(from, to)| from == to) {
-        return Ok(());
+        return Ok(BTreeMap::new());
     }
     let mut failure = None;
     for output in &mut outputs {
@@ -729,7 +734,7 @@ fn relocate_outputs_with(
         output.path = to;
         output.writer = writer;
     }
-    Ok(())
+    Ok(linked.into_iter().collect())
 }
 
 fn publish_batch(
@@ -1031,7 +1036,7 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                             let _ = reply.send(result);
                         }
                         Control::Relocate(directory, reply) => {
-                            let result = relocate_outputs(&mut all, &directory).map(|()| {
+                            let result = relocate_outputs(&mut all, &directory).inspect(|_| {
                                 config.directory = directory;
                                 for (i, passes) in all.iter().enumerate() {
                                     let progress = &progress[i];
@@ -1048,7 +1053,6 @@ pub fn prepare(config: RecordingConfig) -> io::Result<(Box<Recorder>, RecordingS
                                             output.path.clone();
                                     }
                                 }
-                                snapshot_outputs(&all, &config)
                             });
                             if all
                                 .iter()

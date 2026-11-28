@@ -875,15 +875,13 @@ impl AudioCapture {
             && !capture.directory.starts_with(&staged.target)
         {
             match capture.session.relocate(&staged.target) {
-                Ok(after) => {
-                    for path in &staged.live {
-                        self.provisional.remove(path);
-                        capture.owned.remove(path);
+                Ok(moved) => {
+                    // Include passes created after the save checkpoint.
+                    for (from, to) in moved {
+                        self.provisional.remove(&from);
+                        capture.owned.remove(&from);
+                        capture.owned.insert(to);
                     }
-                    // The worker can finish more laps while the project is being written.
-                    capture
-                        .owned
-                        .extend(after.into_iter().map(|take| take.path));
                     capture.directory = staged.target.clone();
                 }
                 Err(error) => {
@@ -1181,6 +1179,90 @@ mod tests {
         assert_eq!(std::fs::read_dir(directory).unwrap().count(), 1);
         assert_eq!(std::fs::read(&published).unwrap(), b"old take");
         assert!(original.is_file());
+        drop(recorder);
+        capture.cancel();
+    }
+
+    #[test]
+    fn a_lap_published_after_the_checkpoint_is_removed_from_provisional_paths_on_save() {
+        use komponist_engine::recording::{CaptureWindow, RecordingTrack};
+        use komponist_model::{AudioInput, HardwareInput, Meter, TempoMap, TickRange};
+
+        let root = tempfile::tempdir().unwrap();
+        let project = root.path().join("Project");
+        std::fs::create_dir(&project).unwrap();
+        let directory = root.path().join("Live");
+        let track = TrackId(1);
+        let mut capture = AudioCapture::default();
+        let mut recorder = capture
+            .prepare(
+                RecordingConfig {
+                    directory: directory.clone(),
+                    sample_rate: 48_000,
+                    format: writer::RecordingFormat::Pcm24,
+                    tracks: vec![RecordingTrack {
+                        track,
+                        name: "Track".into(),
+                        channels: 1,
+                        input: AudioInput::Hardware(HardwareInput {
+                            first: 0,
+                            stereo: false,
+                        }),
+                    }],
+                },
+                Tick::ZERO,
+                true,
+                1,
+            )
+            .unwrap();
+        recorder.set_test_start(0);
+        let tempo = Tempo::new(93.75);
+        let map = TempoMap::constant(tempo, Meter::FOUR_FOUR);
+        let window = |lap| CaptureWindow {
+            at: 0,
+            lap,
+            lp: Some((0, 64)),
+            loop_range: TickRange::new(Tick::ZERO, Tick(2)),
+            map,
+        };
+        recorder.capture_for_test(track, &[0.25; 64], &[0.0; 64], window(0));
+        let staged = capture.stage_for_save(&project).unwrap();
+
+        recorder.capture_for_test(track, &[0.5; 64], &[0.0; 64], window(1));
+        let takes = capture
+            .capture
+            .as_ref()
+            .unwrap()
+            .session
+            .checkpoint()
+            .unwrap();
+        let late = takes
+            .iter()
+            .find(|take| take.lap == 1)
+            .unwrap()
+            .path
+            .clone();
+        capture.refresh_view(tempo, Tick(1), &Names);
+        assert!(capture.provisional.contains(&late));
+        assert!(!staged.live.contains(&late));
+
+        let unrelated = root.path().join("unrelated.wav");
+        std::fs::write(&unrelated, b"other take").unwrap();
+        capture.track_provisional(unrelated.clone());
+        let warnings = capture.saved(staged);
+        assert!(warnings.relocate_failed.is_none());
+        assert!(!late.exists());
+        assert!(!capture.provisional.contains(&late));
+        assert!(capture.provisional.contains(&unrelated));
+        assert!(
+            project
+                .join("Takes")
+                .join(late.file_name().unwrap())
+                .is_file()
+        );
+        let next = capture.stage_for_save(&project).unwrap();
+        assert!(next.warnings.move_failed.is_none());
+        assert_ne!(next.destination(unrelated.clone()), unrelated);
         drop(recorder);
         capture.cancel();
     }
