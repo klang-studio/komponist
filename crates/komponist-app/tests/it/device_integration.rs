@@ -794,6 +794,62 @@ fn snapshot_of_a_touched_parameter_with_its_context_menu() {
     results.unwrap();
 }
 
+/// #382: the range of a choice parameter with long option names (the Sampler's LFO shape) stays
+/// inside the inspector, cut with "…"; the field's AccessKit label and its tooltip carry every
+/// option.
+#[test]
+fn a_long_choice_range_stays_inside_the_inspector() {
+    let mut results = SnapshotResults::new();
+    for (lang, suffix) in [(Lang::De, ""), (Lang::En, "-en")] {
+        let sampler = shipped(&App::headless(Project::new("Intern")), "general-sampler");
+        let (project, track, device) = crate::common::instrument_project("Intern", sampler);
+        let mut app = App::headless(project).with_lang(lang);
+        select_track(&mut app, track);
+        wait_for_layout(&mut app, device);
+        app.dispatch(Action::Ui(UiAction::TouchParam {
+            device,
+            param: ParamId::plugin(author_parameter(&app, device, "lfo_shape")),
+            dragging: false,
+        }));
+        let mut h = harness(app);
+        h.run_steps(30);
+
+        let shapes = [
+            lang.param_general_sampler_sine(),
+            lang.param_general_sampler_triangle(),
+            lang.param_general_sampler_saw_up(),
+            lang.param_general_sampler_saw_down(),
+            lang.param_general_sampler_square(),
+            lang.param_general_sampler_sample_hold(),
+            lang.param_general_sampler_smooth_random(),
+        ]
+        .join(" · ");
+        let key = lang.inspector_param_range();
+        let section = h.get_by_role_and_label(Role::Group, lang.inspector_section_parameter());
+        section.get_by_label(lang.param_general_sampler_lfo_shape());
+        let bounds = section.rect();
+        let field = section.get_by_label(&format!("{key} {shapes}")).rect();
+        assert!(bounds.contains_rect(field), "{field:?} inside {bounds:?}");
+
+        let cpu = h
+            .get_by_role_and_label(Role::Status, lang.transport_cpu())
+            .rect();
+        h.mask(cpu.expand(2.0));
+        h.snapshot(format!("inspector-param-choice-range{suffix}-1x"));
+        results.extend_harness(&mut h);
+
+        // Hovering the cut field shows the full list.
+        h.hover_at(field.center());
+        h.run_steps(60);
+        assert!(
+            h.query_all_by_label(&shapes)
+                .any(|node| node.accesskit_node().role() == Role::Label),
+            "tooltip with {shapes}"
+        );
+    }
+    results.unwrap();
+}
+
 /// The exact topology is part of the real bundle state. A free wire graph is not editable as a
 /// CLAP parameter, so seed it in the initial state exported by the bundle.
 fn snapshot_free_routing(name: &str, expected: [u8; 6]) {

@@ -398,16 +398,22 @@ fn field_key(ui: &Ui, key: Rect, text: &str) {
 }
 
 /// A field that only shows a value (recording: "Noten 14"; project: "Taktart 4/4"): the number
-/// field's look at rest, an AccessKit label "Noten 14".
+/// field's look at rest, an AccessKit label "Noten 14". A value too long for the field (the range
+/// of a choice parameter, #382) is cut with "…"; the tooltip and the AccessKit label carry all of
+/// it.
 fn read_only_field(ui: &mut Ui, rect: Rect, key: &str, value: &str, unit: &str) {
     let look = number_field::look(State::REST, false);
-    number_field::paint(ui.painter(), rect, &look, value, unit, 0.0);
+    let elided = number_field::paint(ui.painter(), rect, &look, value, unit, 0.0);
     let text = if unit.is_empty() {
         format!("{key} {value}")
     } else {
         format!("{key} {value} {unit}")
     };
-    access_label(ui, rect, ("field", key), &text);
+    let response = ui.interact(rect, ui.scope_id().with(("field", key)), Sense::hover());
+    response.widget_info(|| WidgetInfo::labeled(Role::Label, true, &text));
+    if elided {
+        response.on_hover_text(value);
+    }
 }
 
 /// An on/off field ("Loop an"): `accent.surface` when on (`F(…, hl)`), else the number field's

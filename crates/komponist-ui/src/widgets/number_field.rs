@@ -266,18 +266,34 @@ pub const UNIT_TEXT: TypeStyle = typography::VALUE_S;
 /// Paints a number field into `rect`: background, value bar up to `fraction` (0–1) of the width
 /// if the look has one, value text left, unit right, rings. With `look.editing` and `value` not
 /// empty, the value is painted preselected (still pictures of the text entry; the live field
-/// paints an empty `value` and shows a text edit instead).
-pub fn paint(painter: &Painter, rect: Rect, look: &Look, value: &str, unit: &str, fraction: f32) {
+/// paints an empty `value` and shows a text edit instead). A value wider than the room left of the
+/// unit is cut with "…" (CSS `text-overflow: ellipsis`); returns whether it was, so the caller can
+/// offer the full text (tooltip).
+pub fn paint(
+    painter: &Painter,
+    rect: Rect,
+    look: &Look,
+    value: &str,
+    unit: &str,
+    fraction: f32,
+) -> bool {
     let ppp = painter.pixels_per_point();
     let r = paint_base(painter, rect, look, fraction);
     let pad = space::SPACE_2;
+    let mut right = r.right() - pad;
     if !unit.is_empty() {
         let g = painter.layout_job(fonts::layout_job(unit, &UNIT_TEXT, Color32::PLACEHOLDER));
-        let pos = text_pos(r, &g, r.right() - pad - g.size().x, ppp);
+        right -= g.size().x;
+        let pos = text_pos(r, &g, right, ppp);
         painter.galley(pos, g, look.unit);
+        right -= pad;
     }
+    let mut elided = false;
     if !value.is_empty() {
-        let g = painter.layout_job(fonts::layout_job(value, &VALUE_TEXT, Color32::PLACEHOLDER));
+        let mut job = fonts::layout_job(value, &VALUE_TEXT, Color32::PLACEHOLDER);
+        job.wrap = egui::text::TextWrapping::truncate_at_width((right - r.left() - pad).max(0.0));
+        let g = painter.layout_job(job);
+        elided = g.elided;
         let pos = text_pos(r, &g, r.left() + pad, ppp);
         if look.editing {
             // `background: accent.surface; padding: 0 1px` around the preselected value.
@@ -292,6 +308,7 @@ pub fn paint(painter: &Painter, rect: Rect, look: &Look, value: &str, unit: &str
     if look.focus_ring {
         focus::paint_ring(painter, r, radius::M);
     }
+    elided
 }
 
 /// Background and value bar of a field: returns the pixel-snapped rect.
