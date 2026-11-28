@@ -139,8 +139,9 @@ use self::host::{
     ComponentHandler, EDIT_RING, Edit, Edits, HostApplication, ParamChange, PlugFrame, RunLoop,
 };
 use self::module::{Module, audio_classes, load_module, parse_cid};
-use self::processor::{BusLayout, ProcessorSetup, TO_CONTROLLER_RING, Vst3Processor};
+use self::processor::{ProcessorSetup, TO_CONTROLLER_RING, Vst3Processor};
 use self::strings::utf16;
+use crate::adapter::AudioLayout;
 #[cfg(unix)]
 use crate::host::FdEvents;
 use crate::host::{HostContext, TimerId};
@@ -607,7 +608,7 @@ impl Vst3Plugin {
 
     /// Asks for stereo main buses (keeping the other buses' arrangements) and returns the audio
     /// layouts the plugin settled on.
-    fn arrange_buses(&self) -> (BusLayout, BusLayout) {
+    fn arrange_buses(&self) -> (AudioLayout, AudioLayout) {
         let arrangements = |dir: VstEnum, count: usize, main: Option<usize>| {
             (0..count)
                 .map(|index| {
@@ -640,7 +641,7 @@ impl Vst3Plugin {
                 "VST3: setBusArrangements(stereo) declined, adapting to the plugin's layout",
             );
         }
-        let layout = |infos: Vec<BusInfo>, is_input: bool| BusLayout {
+        let layout = |infos: Vec<BusInfo>, is_input: bool| AudioLayout {
             main: main_bus(&infos),
             sidechain: if is_input {
                 sidechain_bus(&infos)
@@ -648,6 +649,8 @@ impl Vst3Plugin {
                 None
             },
             channels: infos.iter().map(|b| b.channelCount.max(0) as u32).collect(),
+            // VST3 has no main-input fallback for an unconnected sidechain.
+            sidechain_from_main: false,
         };
         (
             layout(self.bus_infos(kAudio, kInput), true),
@@ -657,7 +660,7 @@ impl Vst3Plugin {
 
     /// Activates the main audio buses, the sidechain input, the first event input and every bus
     /// the plugin marks default-active.
-    fn activate_buses(&self, inputs: &BusLayout, outputs: &BusLayout) {
+    fn activate_buses(&self, inputs: &AudioLayout, outputs: &AudioLayout) {
         for (media, dir, main, sidechain) in [
             (kAudio, kInput, inputs.main, inputs.sidechain),
             (kAudio, kOutput, outputs.main, None),

@@ -63,7 +63,7 @@ use komponist_plugin_api::params::param_flags;
 
 use self::events::{InputEventList, WireSink};
 use self::host::{KpHost, MainThreadHost, SharedHost};
-use self::processor::{ClapProcessor, NoteTarget, PortLayout};
+use self::processor::{ClapProcessor, NoteTarget};
 #[cfg(unix)]
 use crate::host::FdEvents;
 use crate::host::{HostContext, TimerId};
@@ -322,7 +322,7 @@ impl ClapPlugin {
                 .gui
                 .is_some_and(|gui| gui.is_api_supported(&handle, EMBEDDED));
         let descriptor = PluginDescriptor {
-            sidechain: PortLayout::query(ext.audio_ports, &handle, true)
+            sidechain: processor::port_layout(ext.audio_ports, &handle, true)
                 .sidechain
                 .is_some(),
             ..descriptor
@@ -529,11 +529,11 @@ impl HostedPlugin for ClapPlugin {
                     );
                 }
             }
-            let mut inputs = PortLayout::query(ext.audio_ports, &handle, true);
+            let mut inputs = processor::port_layout(ext.audio_ports, &handle, true);
             inputs.sidechain_from_main = ext.sidechain_from_main;
             (
                 inputs,
-                PortLayout::query(ext.audio_ports, &handle, false),
+                processor::port_layout(ext.audio_ports, &handle, false),
                 NoteTarget::query(ext.note_ports, &handle),
                 self.descriptor
                     .features

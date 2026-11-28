@@ -1,15 +1,11 @@
 //! The audio-thread half of a VST3 instance ([`HostedProcessor`]) around `IAudioProcessor`.
 //!
 //! komponist hands over stereo in and stereo out; the format layer asks for a stereo main bus in
-//! each direction (`setBusArrangements`) and adapts what the plugin settles on, like the CLAP layer:
-//!
-//! - **Input:** the main input bus gets the stereo input (a mono bus `(L + R) / 2`, more than two
-//!   channels L and R and silence). The sidechain bus (the first `kAux` input bus, #6) gets the
-//!   block's sidechain the same way, or silence without one. Every other input bus gets silence.
-//!   An instrument without audio inputs gets `numInputs = 0`.
-//! - **Output:** the main output bus is read back (mono to both channels, more channels: the first
-//!   two; channels flagged silent are zeroed). Other output buses are rendered into scratch
-//!   buffers and discarded. Without output buses the input passes through.
+//! each direction (`setBusArrangements`) and adapts what the plugin settles on with the
+//! [`StereoAdapter`] it shares with the CLAP layer (`crate::adapter`). The sidechain bus is the
+//! first `kAux` input bus (#6); output channels the plugin flags silent (`silenceFlags`) are
+//! zeroed. An instrument without audio inputs gets `numInputs = 0`. Held notes ([`HeldNotes`])
+//! turn an all-notes-off, an unmapped CC 123 and a reset into note-offs.
 //!
 //! Every bus gets buffers, active or not (VST3 FAQ: inactive buses receive silence / "nirvana"
 //! buffers). Notes go to event bus 0. Parameter values from the app, GUI edits from the main
@@ -49,13 +45,10 @@ use super::events::{
 };
 use super::host::{Edit, Edits, ParamChange, QueuedEdit};
 use super::module::Module;
+use crate::adapter::{ALL_NOTES_OFF_ROOM, AudioLayout, HeldNotes, Note, StereoAdapter};
 use crate::host::{HostNotification, HostNotify};
 use crate::plugin::{HostedProcessor, HostingError, ProcessBlock, ProcessStatus};
 
-/// "No note id" in [`WireEvent::note_id`].
-const NO_NOTE_ID: u32 = u32::MAX;
-/// Room in the input event list for an all-notes-off expanded to one note-off per held note.
-const ALL_NOTES_OFF_ROOM: usize = 16 * 128;
 /// Distinct parameters per block and points per parameter, input side.
 const PARAMS_IN: (usize, usize) = (512, 32);
 /// The same for the plugin's output.
@@ -67,122 +60,50 @@ pub(crate) const TO_CONTROLLER_RING: usize = 1024;
 /// CC 123, all notes off.
 const CC_ALL_NOTES_OFF: u8 = 123;
 
-/// Channel counts of one direction's audio buses and which one is the main bus.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct BusLayout {
-    pub(crate) channels: Vec<u32>,
-    pub(crate) main: Option<usize>,
-    /// Inputs only: the sidechain bus (#6).
-    pub(crate) sidechain: Option<usize>,
-}
-
-impl BusLayout {
-    fn total_channels(&self) -> usize {
-        self.channels.iter().map(|&c| c as usize).sum()
-    }
-}
-
-/// Scratch audio and `AudioBusBuffers` for all buses of one direction.
+/// The stereo-adapted scratch audio of one direction and its `AudioBusBuffers`.
 struct BusBuffers {
-    channels: Vec<u32>,
-    main: Option<usize>,
-    sidechain: Option<usize>,
-    /// Per bus: the index of its first channel in `data`.
-    firsts: Vec<usize>,
-    stride: usize,
-    data: Vec<f32>,
-    /// One pointer per channel into `data`, grouped by bus; `buses` point into it.
+    audio: StereoAdapter,
+    /// One pointer per channel into `audio`, grouped by bus; `buses` point into it.
     _pointers: Vec<*mut f32>,
     buses: Vec<AudioBusBuffers>,
 }
 
 impl BusBuffers {
-    fn new(layout: &BusLayout, max_frames: usize) -> BusBuffers {
-        let total = layout.total_channels();
-        let mut data = vec![0.0f32; total * max_frames];
-        let base = data.as_mut_ptr();
-        // SAFETY: every offset is within `data` (channel index < total).
-        let pointers: Vec<*mut f32> = (0..total)
-            .map(|ch| unsafe { base.add(ch * max_frames) })
-            .collect();
-        let mut buses = Vec::with_capacity(layout.channels.len());
-        let mut firsts = Vec::with_capacity(layout.channels.len());
-        let mut first = 0usize;
-        for &count in &layout.channels {
-            firsts.push(first);
-            let channel_buffers = if count == 0 {
-                std::ptr::null_mut()
-            } else {
-                pointers[first..].as_ptr().cast_mut()
-            };
-            buses.push(AudioBusBuffers {
+    fn new(layout: &AudioLayout, max_frames: usize) -> BusBuffers {
+        let mut audio = StereoAdapter::new(layout, max_frames);
+        let pointers = audio.channel_pointers();
+        let buses = layout
+            .channels
+            .iter()
+            .enumerate()
+            .map(|(bus, &count)| AudioBusBuffers {
                 numChannels: count as i32,
                 silenceFlags: 0,
                 __field0: AudioBusBuffers__type0 {
-                    channelBuffers32: channel_buffers,
+                    channelBuffers32: if count == 0 {
+                        std::ptr::null_mut()
+                    } else {
+                        pointers[audio.first_channel(bus)..].as_ptr().cast_mut()
+                    },
                 },
-            });
-            first += count as usize;
-        }
+            })
+            .collect();
         BusBuffers {
-            channels: layout.channels.clone(),
-            main: layout.main,
-            sidechain: layout.sidechain,
-            firsts,
-            stride: max_frames,
-            data,
+            audio,
             _pointers: pointers,
             buses,
         }
     }
 
-    fn main_channels(&self) -> usize {
-        self.main.map_or(0, |m| self.channels[m] as usize)
-    }
-
-    /// Channel `ch` of bus `bus`, `frames` long.
-    fn bus_channel(&mut self, bus: usize, ch: usize, frames: usize) -> &mut [f32] {
-        let start = (self.firsts[bus] + ch) * self.stride;
-        &mut self.data[start..start + frames]
-    }
-
-    fn main_channel(&mut self, ch: usize, frames: usize) -> &mut [f32] {
-        let main = self.main.expect("a main bus");
-        self.bus_channel(main, ch, frames)
-    }
-
-    /// Writes the stereo `src` into `bus`, adapted to its channel count: a mono bus gets the mid
-    /// signal, a bus with more channels L and R and (already) silence in the rest.
-    fn write_stereo(&mut self, bus: usize, src: [&[f32]; 2], frames: usize) {
-        match self.channels[bus] {
-            0 => {}
-            1 => {
-                let mono = self.bus_channel(bus, 0, frames);
-                for ((m, l), r) in mono.iter_mut().zip(src[0]).zip(src[1]) {
-                    *m = 0.5 * (l + r);
-                }
-            }
-            _ => {
-                for (ch, samples) in src.iter().enumerate() {
-                    self.bus_channel(bus, ch, frames)
-                        .copy_from_slice(&samples[..frames]);
-                }
-            }
-        }
-    }
-
     /// Zeroes the first `frames` of every channel and clears the silence flags.
     fn clear(&mut self, frames: usize) {
-        for channel in self.data.chunks_exact_mut(self.stride.max(1)) {
-            channel[..frames].fill(0.0);
-        }
+        self.audio.clear(frames);
         for bus in &mut self.buses {
             bus.silenceFlags = 0;
         }
     }
 
-    /// Input side: silences every bus, then writes the stereo `input` into the main bus and the
-    /// `sidechain` (if any) into the sidechain bus.
+    /// Input side: every bus cleared, then the stereo `input` and the `sidechain` adapted in.
     fn fill_from_stereo(
         &mut self,
         input: [&[f32]; 2],
@@ -190,42 +111,14 @@ impl BusBuffers {
         frames: usize,
     ) {
         self.clear(frames);
-        if let Some(main) = self.main {
-            self.write_stereo(main, input, frames);
-        }
-        if let (Some(bus), Some(sidechain)) = (self.sidechain, sidechain) {
-            self.write_stereo(bus, sidechain, frames);
-        }
+        self.audio.fill_from_stereo(input, sidechain, frames);
     }
 
     /// Output side: the main bus into the stereo `output`; channels the plugin flagged silent are
     /// zeroed. Without a main bus the `input` passes through.
     fn read_to_stereo(&mut self, input: [&[f32]; 2], output: &mut [&mut [f32]; 2], frames: usize) {
-        let silence = self.main.map_or(0, |m| self.buses[m].silenceFlags);
-        let copy = |this: &mut BusBuffers, ch: usize, dst: &mut [f32]| {
-            if silence & (1 << ch.min(63)) != 0 {
-                dst[..frames].fill(0.0);
-            } else {
-                dst[..frames].copy_from_slice(this.main_channel(ch, frames));
-            }
-        };
-        match self.main_channels() {
-            0 => {
-                for (dst, src) in output.iter_mut().zip(input) {
-                    dst[..frames].copy_from_slice(&src[..frames]);
-                }
-            }
-            1 => {
-                let [left, right] = output;
-                copy(self, 0, left);
-                right[..frames].copy_from_slice(&left[..frames]);
-            }
-            _ => {
-                for (ch, dst) in output.iter_mut().enumerate() {
-                    copy(self, ch, dst);
-                }
-            }
-        }
+        let silent = self.audio.main().map_or(0, |m| self.buses[m].silenceFlags);
+        self.audio.read_to_stereo(input, output, frames, silent);
     }
 }
 
@@ -269,8 +162,8 @@ pub(crate) fn process_context(t: &WireTransport, sample_rate: f64, steady: u64) 
 pub(crate) struct ProcessorSetup {
     pub(crate) audio: ComPtr<IAudioProcessor>,
     pub(crate) module: Arc<Module>,
-    pub(crate) inputs: BusLayout,
-    pub(crate) outputs: BusLayout,
+    pub(crate) inputs: AudioLayout,
+    pub(crate) outputs: AudioLayout,
     /// The plugin has an event input bus.
     pub(crate) notes: bool,
     pub(crate) process_mode: i32,
@@ -311,8 +204,7 @@ pub(crate) struct Vst3Processor {
     initial_generation: u64,
     to_controller: rtrb::Producer<ParamChange>,
     host_controller_updates: Option<Vec<ParamChange>>,
-    /// Held notes: bit `c` of `held[key]` = channel `c`.
-    held: [u16; 128],
+    held: HeldNotes,
     started: bool,
     release_held: bool,
     alive: Arc<AtomicBool>,
@@ -352,7 +244,7 @@ impl Vst3Processor {
             initial_generation: setup.initial_generation,
             to_controller: setup.to_controller,
             host_controller_updates: None,
-            held: [0; 128],
+            held: HeldNotes::new(),
             started: false,
             release_held: false,
             alive: setup.alive,
@@ -360,40 +252,31 @@ impl Vst3Processor {
         }
     }
 
-    /// A note on (`velocity > 0`) or off; out-of-range channels and keys are dropped.
-    fn note(&mut self, time: u32, channel: u8, key: u8, velocity: u8, note_id: u32) {
-        if channel >= 16 || key >= 128 {
+    /// A note on or off that [`HeldNotes`] recorded (`None`: out of range), as an event on bus 0.
+    fn push_note(&mut self, time: u32, note: Option<Note>) {
+        let Some(note) = note else {
+            return;
+        };
+        if !self.notes {
             return;
         }
-        let bit = 1u16 << channel;
-        let id = if note_id == NO_NOTE_ID {
-            -1
+        let Note {
+            channel,
+            key,
+            velocity,
+            note_id,
+        } = note;
+        self.events_in.push(if note.is_on() {
+            note_on(time, channel, key, velocity, note_id)
         } else {
-            (note_id & i32::MAX as u32) as i32
-        };
-        if velocity > 0 {
-            self.held[key as usize] |= bit;
-            if self.notes {
-                self.events_in
-                    .push(note_on(time, channel, key, velocity, id));
-            }
-        } else {
-            self.held[key as usize] &= !bit;
-            if self.notes {
-                self.events_in.push(note_off(time, channel, key, 0, id));
-            }
-        }
+            note_off(time, channel, key, 0, note_id)
+        });
     }
 
     /// Note-offs for every held note.
     fn release_all(&mut self, time: u32) {
-        for key in 0..128u8 {
-            let mut channels = self.held[key as usize];
-            while channels != 0 {
-                let channel = channels.trailing_zeros() as u8;
-                channels &= channels - 1;
-                self.note(time, channel, key, 0, NO_NOTE_ID);
-            }
+        for note in self.held.release_all() {
+            self.push_note(time, Some(note));
         }
     }
 
@@ -411,8 +294,10 @@ impl Vst3Processor {
             }
         };
         match status & 0xF0 {
-            0x80 => self.note(time, channel, d1, 0, NO_NOTE_ID),
-            0x90 => self.note(time, channel, d1, d2, NO_NOTE_ID),
+            0x80 | 0x90 => {
+                let note = self.held.midi(channel, d1, d2, status & 0xF0 == 0x90);
+                self.push_note(time, note);
+            }
             0xA0 if self.notes => {
                 self.events_in.push(poly_pressure(time, channel, d1, d2));
             }
@@ -484,12 +369,18 @@ impl Vst3Processor {
                     key,
                     velocity,
                     note_id,
-                }) => self.note(time, channel, key, velocity.max(1), note_id),
+                }) => {
+                    let note = self.held.on(channel, key, velocity, note_id);
+                    self.push_note(time, note);
+                }
                 Some(WireEventKind::NoteOff {
                     channel,
                     key,
                     note_id,
-                }) => self.note(time, channel, key, 0, note_id),
+                }) => {
+                    let note = self.held.off(channel, key, note_id);
+                    self.push_note(time, note);
+                }
                 Some(WireEventKind::AllNotesOff) => self.release_all(time),
                 Some(WireEventKind::Midi(data)) => self.midi(time, data),
                 Some(WireEventKind::ParamValue { id, value }) => {
@@ -688,87 +579,45 @@ impl Drop for Vst3Processor {
 mod tests {
     use super::*;
 
-    fn layout(channels: &[u32], main: Option<usize>) -> BusLayout {
-        BusLayout {
+    fn layout(channels: &[u32], main: Option<usize>) -> AudioLayout {
+        AudioLayout {
             channels: channels.to_vec(),
             main,
-            sidechain: None,
+            ..AudioLayout::default()
         }
     }
 
     #[test]
-    fn the_sidechain_goes_into_its_bus_or_silence() {
-        let left = [1.0, 2.0, 3.0];
-        let right = [3.0, 4.0, 5.0];
-        let sc = [[0.5f32; 3], [-0.5f32; 3]];
-        let mut buses = BusBuffers::new(
-            &BusLayout {
-                sidechain: Some(1),
-                ..layout(&[2, 2, 1], Some(0))
-            },
-            4,
-        );
-        buses.data.fill(9.0);
-        buses.fill_from_stereo([&left, &right], Some([&sc[0], &sc[1]]), 3);
-        assert_eq!(buses.main_channel(0, 3), &left);
-        assert_eq!(buses.bus_channel(1, 0, 3), &sc[0]);
-        assert_eq!(buses.bus_channel(1, 1, 3), &sc[1]);
-        assert_eq!(buses.bus_channel(2, 0, 3), &[0.0; 3]);
-        buses.fill_from_stereo([&left, &right], None, 3);
-        assert_eq!(buses.bus_channel(1, 0, 3), &[0.0; 3]);
-        // A mono sidechain bus gets the mid signal.
-        let mut buses = BusBuffers::new(
-            &BusLayout {
-                sidechain: Some(1),
-                ..layout(&[2, 1], Some(0))
-            },
-            3,
-        );
-        buses.fill_from_stereo([&left, &right], Some([&left, &right]), 3);
-        assert_eq!(buses.bus_channel(1, 0, 3), &[2.0, 3.0, 4.0]);
-    }
-
-    #[test]
     fn bus_buffers_point_into_their_data() {
-        let buffers = BusBuffers::new(&layout(&[2, 0, 1], Some(0)), 4);
+        let mut buffers = BusBuffers::new(&layout(&[2, 0, 1], Some(0)), 4);
         assert_eq!(buffers.buses.len(), 3);
         assert_eq!(buffers.buses[0].numChannels, 2);
         let channels = unsafe { buffers.buses[0].__field0.channelBuffers32 };
         let second = unsafe { *channels.add(1) };
-        assert_eq!(second, unsafe { buffers.data.as_ptr().add(4) }.cast_mut());
+        let data = buffers.audio.port_channel(0, 0, 4).as_mut_ptr();
+        assert_eq!(second, data.wrapping_add(4));
         assert!(unsafe { buffers.buses[1].__field0.channelBuffers32 }.is_null());
         let third = unsafe { *buffers.buses[2].__field0.channelBuffers32 };
-        assert_eq!(third, unsafe { buffers.data.as_ptr().add(8) }.cast_mut());
+        assert_eq!(third, buffers.audio.port_channel(2, 0, 4).as_mut_ptr());
     }
 
+    /// The plugin's silence flags zero their main output channels; `clear` resets them.
     #[test]
-    fn stereo_adapts_to_the_main_bus() {
-        let left = [1.0, 2.0, 3.0];
-        let right = [3.0, 4.0, 5.0];
-        // Sidechain (2 ch) first, mono main second.
-        let mut buses = BusBuffers::new(&layout(&[2, 1], Some(1)), 4);
-        buses.data.fill(9.0);
-        buses.fill_from_stereo([&left, &right], None, 3);
-        assert_eq!(buses.main_channel(0, 3), &[2.0, 3.0, 4.0]);
-        assert_eq!(&buses.data[0..3], &[0.0; 3]);
-
-        // Mono output to both channels; a channel flagged silent is zeroed.
+    fn silence_flags_zero_their_output_channels() {
         let input = [[7.0f32; 2], [8.0f32; 2]];
         let input = [&input[0][..], &input[1][..]];
         let (mut l, mut r) = ([0.0f32; 2], [0.0f32; 2]);
-        let mut out = BusBuffers::new(&layout(&[1], Some(0)), 2);
-        out.main_channel(0, 2).copy_from_slice(&[0.5, -0.5]);
-        out.read_to_stereo(input, &mut [&mut l, &mut r], 2);
-        assert_eq!((l, r), ([0.5, -0.5], [0.5, -0.5]));
         let mut out = BusBuffers::new(&layout(&[2], Some(0)), 2);
-        out.data.fill(0.25);
+        out.audio.port_channel(0, 0, 2).fill(0.25);
+        out.audio.port_channel(0, 1, 2).fill(0.5);
         out.buses[0].silenceFlags = 0b10;
         out.read_to_stereo(input, &mut [&mut l, &mut r], 2);
         assert_eq!((l, r), ([0.25; 2], [0.0; 2]));
-        // No output bus: the input passes through.
-        let mut out = BusBuffers::new(&BusLayout::default(), 2);
+        out.buses[0].silenceFlags = 0b11;
+        out.clear(0);
+        assert_eq!(out.buses[0].silenceFlags, 0);
         out.read_to_stereo(input, &mut [&mut l, &mut r], 2);
-        assert_eq!((l, r), ([7.0; 2], [8.0; 2]));
+        assert_eq!((l, r), ([0.25; 2], [0.5; 2]));
     }
 
     #[test]

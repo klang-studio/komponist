@@ -13,6 +13,8 @@
 //! - [`host_loop`]: [`host_loop::PollLoop`], a reference `poll()` implementation of [`HostLoop`]
 //!   with the write-interest policy for plugin fds (used by the tests; the bridge owns its loop);
 //!   on Windows a message-pumping wait (`host_loop::wake`) shared with the bridge.
+//! - `adapter` (private): what the CLAP and VST3 processors share: the stereo adaptation of a
+//!   plugin's audio ports and the held notes behind all-notes-off (#243).
 //! - `clap` (private): the CLAP format layer on clack-host 0.2 (WP-26).
 //! - `library` (private): `dlopen` (Windows: `LoadLibraryExW` + pin) for both layers; plugin
 //!   libraries are never unmapped.
@@ -39,6 +41,7 @@ use std::path::Path;
 #[global_allocator]
 static ALLOC: assert_no_alloc::AllocDisabler = assert_no_alloc::AllocDisabler;
 
+mod adapter;
 #[cfg(target_os = "macos")]
 mod bundle;
 mod clap;
