@@ -298,6 +298,8 @@ impl ClapPlugin {
         let host_info = HostInfo::new(context.host_name, HOST_VENDOR, "", context.host_version)
             .map_err(|e| HostingError::Load(format!("host info: {e}")))?;
 
+        #[cfg(all(test, windows))]
+        let _fixture_creation = crate::lock_fixture_creation();
         let main_thread = std::thread::current().id();
         let notify = context.notify.clone();
         let host_loop = context.host_loop.clone();
