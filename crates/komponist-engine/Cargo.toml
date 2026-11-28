@@ -9,6 +9,9 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+recording-test-support = []
+
 [dependencies]
 komponist-processor.workspace = true
 komponist-model.workspace = true
@@ -33,3 +36,6 @@ rustix.workspace = true
 [target.'cfg(windows)'.dependencies]
 # WaitOnAddress / WakeByAddress* of the worker pool (W3).
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[dev-dependencies]
+komponist-session.workspace = true

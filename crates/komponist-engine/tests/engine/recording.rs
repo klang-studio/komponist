@@ -1,14 +1,15 @@
 //! Synthetic audio capture only. Every engine callback is guarded against allocation/free.
 use crate::common::*;
 use komponist_engine::compile::{self, NoEnv};
-use komponist_engine::recording::{
-    self, RecordingConfig, RecordingError, RecordingFormat, RecordingResult, RecordingSession,
-    RecordingTrack,
-};
+use komponist_engine::recording::{Recorder, RecordingTrack};
 use komponist_engine::{AudioInputBuffer, AudioInputRoutes, Command, LiveInput};
 use komponist_model::edits::{self, ChannelProp, NewAudioTrack, NewBus, TrackProp};
 use komponist_model::{
     AudioInput, HardwareInput, MonitorMode, Project, Tick, TickRange, TrackId, TrackOutput,
+};
+use komponist_session::recording::writer::{
+    self as recording, RecordingConfig, RecordingError, RecordingFormat, RecordingResult,
+    RecordingSession,
 };
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -63,7 +64,7 @@ fn prepare(
     p: &Project,
     tracks: &[TrackId],
     format: RecordingFormat,
-) -> (Scratch, Box<recording::Recorder>, RecordingSession) {
+) -> (Scratch, Box<Recorder>, RecordingSession) {
     let directory = directory();
     let (rec, session) = recording::prepare(RecordingConfig {
         directory: directory.0.clone(),

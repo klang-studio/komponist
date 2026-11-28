@@ -14,9 +14,9 @@ thread. The crate can run without a window or an egui dependency.
   processes.
 - [src/project_io.rs](src/project_io.rs) — Loads and validates project files, reports repairs,
   resolves project paths and atomically publishes saves.
-- [src/recording/](src/recording/) — Captures MIDI laps and automation segments, builds live
-  previews and prepares document edits. The app supplies localized MIDI take and clip names
-  and coordinates transport events, audio capture and take finalization.
+- [src/recording/](src/recording/) — Builds MIDI, audio and automation previews, writes WAVs
+  and finalizes takes. Audio, MIDI and automation from one take enter the document in a single
+  undo step. The app supplies localized take names and coordinates transport events.
 
 ## Project lifecycle
 

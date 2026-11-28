@@ -11,8 +11,8 @@ use komponist_i18n::Lang;
 use komponist_model::automation::{AutomationOwner, LaneId};
 use komponist_model::{DeviceId, Project, Tick};
 
-use audio_record::AudioRecording;
 use komponist_session::engine_sync::DraftOverlay;
+use komponist_session::recording::audio::{AudioCapture, AudioRecording, TAKE_FINISH_TIMEOUT};
 use komponist_session::recording::automation::AutomationCapture;
 use komponist_session::recording::midi::{Commit, Recording, TakeNames};
 
@@ -36,7 +36,8 @@ impl TakeNames for MidiTakeNames {
 #[derive(Default)]
 pub(crate) struct RecordingController {
     midi: Option<Recording>,
-    audio: audio_record::State,
+    audio: AudioCapture,
+    audio_root: Option<std::path::PathBuf>,
     automation: AutomationCapture,
     // Native writes intercepted for macro learning are ignored until the release.
     learned_automation: BTreeSet<(DeviceId, u32)>,
@@ -180,6 +181,6 @@ impl RecordingController {
     }
 
     pub(crate) fn shutdown(&mut self) {
-        self.audio.shutdown(audio_record::TAKE_FINISH_TIMEOUT);
+        self.audio.shutdown(TAKE_FINISH_TIMEOUT);
     }
 }

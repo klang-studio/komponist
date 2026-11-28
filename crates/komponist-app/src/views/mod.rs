@@ -86,7 +86,7 @@ pub struct ViewCtx<'a> {
     pub(crate) automation_capture:
         Option<&'a komponist_session::recording::automation::AutomationCapture>,
     /// Live audio capture overlay, separate from the MIDI recording overlay.
-    pub audio_recording: Option<&'a crate::recording::audio_record::AudioRecording>,
+    pub audio_recording: Option<&'a komponist_session::recording::audio::AudioRecording>,
     /// Folder behind the provisional-recordings notice, if any.
     pub provisional_recordings: Option<&'a std::path::Path>,
     /// This session's WAV exports of the project, oldest first (WP-53b): the browser lists them

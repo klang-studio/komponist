@@ -2994,6 +2994,7 @@ dependencies = [
  "komponist-model",
  "komponist-processor",
  "komponist-rt",
+ "komponist-session",
  "komponist-stretch",
  "rtrb",
  "rustix 1.1.6",
@@ -3242,6 +3243,7 @@ name = "komponist-session"
 version = "0.2.0"
 dependencies = [
  "assert_no_alloc",
+ "hound",
  "komponist-audio",
  "komponist-engine",
  "komponist-ipc",
