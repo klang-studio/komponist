@@ -492,6 +492,7 @@ impl Vst3Plugin {
         let state = stream::write_with(|s| unsafe { self.component.getState(s) });
         match state {
             Ok(bytes) => {
+                // SAFETY: as above.
                 stream::read_with(&bytes, |s| unsafe { controller.setComponentState(s) });
             }
             Err(result) => self.log(
@@ -993,8 +994,11 @@ impl HostedPlugin for Vst3Plugin {
             // rejected blob, to bring a separate controller back in sync for parameter reads.
             if self.separate_controller
                 && let Some(controller) = &self.controller
+                // SAFETY: main thread; the stream lives for the call.
                 && let Ok(current) = stream::write_with(|s| unsafe { self.component.getState(s) })
             {
+                // SAFETY: main thread; the controller belongs to this component and the stream
+                // lives for the call.
                 stream::read_with(&current, |s| unsafe { controller.setComponentState(s) });
             }
             return Err(HostingError::State(format!(
@@ -1007,10 +1011,12 @@ impl HostedPlugin for Vst3Plugin {
             && let Some(controller) = &self.controller
         {
             // Host duty: the controller follows the component, then gets its own state.
+            // SAFETY: main thread; the stream lives for the call.
             stream::read_with(parts.component, |s| unsafe {
                 controller.setComponentState(s)
             });
             if !parts.controller.is_empty() {
+                // SAFETY: as above.
                 let result =
                     stream::read_with(parts.controller, |s| unsafe { controller.setState(s) });
                 if result != kResultOk {
