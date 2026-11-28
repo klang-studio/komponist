@@ -215,12 +215,17 @@ impl Engine {
         }
     }
 
-    /// Releases gate-mode voices of `pad`. One-shot voices ignore note offs.
+    /// Releases gate-mode pad voices of `pad`, those started by [`Engine::note_on`] or
+    /// [`Engine::note_on_with_id`]. One-shot voices ignore note offs. Region voices started by
+    /// [`Engine::trigger`] are not released here, even on the same pad: release them with
+    /// [`Engine::release_note`] or [`Engine::release_note_gates`].
     pub fn note_off(&mut self, pad: usize, settings: &[PadSettings]) {
         self.note_off_with_id(pad, settings, None, None);
     }
 
-    /// Releases gate-mode pad voices. When supplied, the note ID narrows the release.
+    /// Releases gate-mode pad voices of `pad`. When supplied, the note ID narrows the release.
+    /// Like [`Engine::note_off`], it skips region voices started by [`Engine::trigger`]; use
+    /// [`Engine::release_note`] or [`Engine::release_note_gates`] for those.
     pub fn note_off_with_id(
         &mut self,
         pad: usize,
@@ -893,6 +898,53 @@ mod tests {
             let output: Vec<_> = (0..128).map(|_| t.render(&mut engine, 1)[0][0]).collect();
             assert!(output[106..124].iter().any(|&frame| frame > 0.35));
             assert!(output[127] > 0.5, "{direction:?}: {}", output[127]);
+            assert_eq!(t.render(&mut engine, 1)[0], [0.0; 2]);
+            assert_eq!(engine.active_voices(), 0);
+        }
+    }
+
+    /// #381: a finite region longer than one hop, transposed down, must still read its last
+    /// source frames. With voice ID 1 the first hop is 48 frames early, so without anchoring the
+    /// final grain starts at frame 1,488 and reads source only up to about frame 1,844.
+    #[test]
+    fn long_transposed_regions_play_the_tail_in_both_directions() {
+        use crate::PlaybackDirection::{Forward, Reverse};
+
+        const LEN: usize = 2_200;
+        for direction in [Forward, Reverse] {
+            let mut t = setup(&[]);
+            let slot = slot_index(0, 0);
+            let mut data = vec![0.0; LEN];
+            data[2_100..2_150].fill(0.5);
+            if direction == Reverse {
+                data.reverse();
+            }
+            t.samples[slot] = Some(Arc::new(Sample::mono(SR, data)));
+            let mut engine = Engine::new(SR);
+            engine.trigger(
+                SampleTrigger {
+                    pad: 0,
+                    slot,
+                    key: 60,
+                    note_id: None,
+                    channel: None,
+                    velocity: 1.0,
+                    tune: -12.0,
+                    independent_pitch: true,
+                    region: crate::PlaybackRegion {
+                        direction,
+                        ..Default::default()
+                    },
+                },
+                t.samples[slot].as_deref().unwrap(),
+                &t.settings[0],
+            );
+            assert_eq!(engine.voices[0].id % 16, 1);
+            let output: Vec<_> = (0..LEN).map(|_| t.render(&mut engine, 1)[0][0]).collect();
+            assert!(
+                output.iter().any(|&frame| frame > 0.35),
+                "{direction:?}: the tail was not played"
+            );
             assert_eq!(t.render(&mut engine, 1)[0], [0.0; 2]);
             assert_eq!(engine.active_voices(), 0);
         }

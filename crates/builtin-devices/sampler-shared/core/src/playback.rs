@@ -228,7 +228,15 @@ impl Playback {
             self.reflect(next, window.start, window.end - 1.0)
         } else if (!self.backward && next >= window.end) || (self.backward && next < window.start) {
             self.wrapped = true;
-            window.start + (next - window.start).rem_euclid(window.end - window.start)
+            let wrapped =
+                window.start + (next - window.start).rem_euclid(window.end - window.start);
+            // Rounding can carry a tiny negative remainder up to the full period, onto the
+            // exclusive end; stay on the last representable position inside the loop.
+            if wrapped >= window.end {
+                window.end.next_down()
+            } else {
+                wrapped
+            }
         } else {
             next
         }
@@ -410,6 +418,34 @@ mod tests {
         for frame in 1..=24 {
             pos = state.advance(pos, 1.0);
             assert_eq!(pos, (frame % 8) as f64);
+        }
+    }
+
+    /// #381: `rem_euclid` rounds the tiny negative remainder of this reverse wrap up to the full
+    /// period, which would put the read head on the exclusive loop end and stop the voice.
+    #[test]
+    fn reverse_wrap_stays_below_the_exclusive_loop_end() {
+        let window = PlaybackLoop {
+            start: 2.0 + 2f64.powi(-51),
+            end: 16.0,
+            crossfade: 0.0,
+        };
+        let mut state = playback(
+            PlaybackRegion {
+                end: 16.0,
+                looping: Some(window),
+                direction: PlaybackDirection::Reverse,
+                ..PlaybackRegion::default()
+            },
+            16,
+        );
+        let mut pos = state.start(0.0);
+        for _ in 0..100 {
+            pos = state.advance(pos, 1.0);
+            assert!(
+                (window.start..window.end).contains(&pos) && state.contains(pos),
+                "{pos}"
+            );
         }
     }
 
