@@ -23,7 +23,7 @@ struct Expect {
     /// [`gui_kp_test_synth`]).
     drawn: bool,
     /// A mouse drag (from, to) in editor coordinates over a control: the edit must arrive as
-    /// `performEdit` (a `ParamEdited` notification) and in the controller.
+    /// `performEdit` (a `ParamEdited` notification, without a flush) and in the controller.
     drag: Option<((i16, i16), (i16, i16))>,
 }
 
@@ -121,7 +121,12 @@ fn exercise_gui(bundle: &Path, name: &str, expect: Expect) {
             "param {id}: {now} after edit {value}"
         );
         let observed = host_loop.take_observed();
-        assert!(observed.has(bits::PARAM_EDITED) && observed.has(bits::STATE_DIRTY));
+        // A GUI edit is a parameter edit, not a state report: the host no longer adds
+        // `StateDirty` to `performEdit` (#155; `component_handler_forwards_edits` pins that), and
+        // `StateDirty` only follows the plugin's own `setDirty` or
+        // `restartComponent(kParamValuesChanged)`. Dexed 1.0.1 sends neither for a knob drag, only
+        // `beginEdit` / `performEdit` / `endEdit` per step (#383), so the drag must not expect it.
+        assert!(observed.has(bits::PARAM_EDITED));
         assert!(observed.flushed.is_empty(), "VST3 edits need no flush");
         edit = Some((after - before, id, value));
     }
